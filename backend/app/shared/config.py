@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,6 +22,16 @@ class Settings(BaseSettings):
     rag_data_source: str = "postgres"
     cors_origins: str = "http://localhost:3000"
     max_xosc_size_bytes: int = 10 * 1024 * 1024
+
+    @field_validator("database_url")
+    @classmethod
+    def _use_asyncpg_driver(cls, value: str) -> str:
+        # Hosted Postgres (Render, Heroku, ...) hands out postgres:// or postgresql:// URLs;
+        # the app engine needs the asyncpg driver and Alembic strips it again for psycopg.
+        for prefix in ("postgres://", "postgresql://"):
+            if value.startswith(prefix):
+                return "postgresql+asyncpg://" + value[len(prefix):]
+        return value
 
     @model_validator(mode="after")
     def _reject_default_secrets_outside_development(self) -> "Settings":

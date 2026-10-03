@@ -1,0 +1,51 @@
+# Render Blueprint: Postgres (pgvector) + FastAPI backend (Docker) + Next.js frontend (Node).
+# Deploy: Render Dashboard → New → Blueprint → chọn repo này. Hướng dẫn đầy đủ: docs/17-deploy-render.md
+databases:
+  - name: scenario-forge-db
+    databaseName: scenario_forge
+    user: scenario
+    plan: free
+
+services:
+  - type: web
+    name: scenario-forge-api
+    runtime: docker
+    dockerContext: ./backend
+    dockerfilePath: ./backend/Dockerfile
+    plan: free
+    healthCheckPath: /health/ready
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: scenario-forge-db
+          property: connectionString
+      # The free plan has no pre-deploy step, so start.sh applies migrations before serving.
+      - key: RUN_MIGRATIONS
+        value: "1"
+      - key: APP_ENV
+        value: production
+      - key: JWT_SECRET
+        generateValue: true
+      - key: WORKER_SERVICE_TOKEN
+        generateValue: true
+      - key: EMBEDDING_PROVIDER
+        value: disabled
+      - key: RAG_DATA_SOURCE
+        value: postgres
+      # Frontend origin, e.g. https://scenario-forge-web.onrender.com (set after the first deploy).
+      - key: CORS_ORIGINS
+        sync: false
+
+  - type: web
+    name: scenario-forge-web
+    runtime: node
+    rootDir: frontend
+    plan: free
+    buildCommand: npm ci && npm run build && cp -r .next/static .next/standalone/.next/static && cp -r public .next/standalone/public
+    startCommand: HOSTNAME=0.0.0.0 node .next/standalone/server.js
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # Backend API URL baked in at build time, e.g. https://scenario-forge-api.onrender.com/api/v1
+      - key: NEXT_PUBLIC_API_BASE_URL
+        sync: false

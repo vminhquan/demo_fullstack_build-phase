@@ -69,6 +69,7 @@ Khi nhóm chốt tên chính thức của 5 trường, thay tên trong DTO/schem
 15. [14-mock-test-case-data.md](docs/14-mock-test-case-data.md)
 16. [15-minio-object-storage.md](docs/15-minio-object-storage.md)
 17. [16-phan-quyen-va-man-hinh.md](docs/16-phan-quyen-va-man-hinh.md) — ai được làm gì, ở màn nào
+18. [17-deploy-render.md](docs/17-deploy-render.md) — triển khai lên Render
 
 ## Tìm kiếm semantic/RAG
 
