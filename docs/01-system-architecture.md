@@ -6,6 +6,8 @@ Luồng B chịu trách nhiệm **quản lý vòng đời test case**: xác th�
 
 Luồng B **không triển khai Agent/CARLA/ScenarioRunner**. Khi Test Suite yêu cầu chạy batch, Luồng B chỉ tạo `run_job` và trao đổi qua contract với Worker của Luồng A.
 
+> Cập nhật 2026-10-03: hệ thống có thêm service **Agent sinh kịch bản** (`agent/`). Agent nhận prompt kèm dữ liệu CARLA (catalog) do Backend gửi, rồi trả về `.xosc` đã đặt lên làn thật của map; Backend lưu catalog, lịch sử sinh và DRAFT version. Agent không chạy CARLA. Chi tiết ở [19-agent-sinh-kich-ban.md](19-agent-sinh-kich-ban.md).
+
 > Ghi chú tích hợp cần verify với Luồng A: Worker chủ động kết nối outbound tới Backend bằng **WebSocket/WSS** để nhận job, gửi heartbeat/trạng thái. Chi tiết Worker/CARLA không thuộc implementation scope của Luồng B.
 
 ## 2. Container architecture của Luồng B

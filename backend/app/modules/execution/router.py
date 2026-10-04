@@ -17,6 +17,8 @@ from app.shared.infrastructure.db import SessionFactory, get_session
 from app.shared.infrastructure.models import RunJob, RunJobStatus, RunResult, RunVerdict, SuiteRunStatus, TestCase, TestCaseVersion, TestSuiteRun
 
 router = APIRouter(tags=["execution"])
+# CARLA worker endpoints: authenticated by X-Worker-Token, outside any project URL.
+worker_router = APIRouter(tags=["execution-worker"])
 
 
 def serialize_result(result: RunResult | None) -> RunResultResponse | None:
@@ -149,7 +151,7 @@ async def cancel_job(job_id: int, actor: Principal = Depends(require("suite:run"
     return serialize_job(job)
 
 
-@router.post("/integration/worker/jobs/next")
+@worker_router.post("/integration/worker/jobs/next")
 async def next_job(x_worker_token: str | None = Header(default=None), x_worker_id: str = Header(default="worker")) -> dict:
     verify_worker_token(x_worker_token)
     job = await claim_next(x_worker_id)
@@ -157,7 +159,7 @@ async def next_job(x_worker_token: str | None = Header(default=None), x_worker_i
     return {"job": {"id": job.id, "project_id": job.project_id, "test_case_version_id": job.test_case_version_id, "attempt": job.attempt}}
 
 
-@router.post("/integration/worker/jobs/{job_id}/started")
+@worker_router.post("/integration/worker/jobs/{job_id}/started")
 async def worker_started(job_id: int, x_worker_token: str | None = Header(default=None), session: AsyncSession = Depends(get_session)) -> dict:
     verify_worker_token(x_worker_token)
     job = await get_job(session, job_id, locked=True)
@@ -168,7 +170,7 @@ async def worker_started(job_id: int, x_worker_token: str | None = Header(defaul
     return {"job_id": job.id, "status": job.status.value}
 
 
-@router.post("/integration/worker/jobs/{job_id}/completed", response_model=RunJobResponse)
+@worker_router.post("/integration/worker/jobs/{job_id}/completed", response_model=RunJobResponse)
 async def worker_completed(job_id: int, body: WorkerCompleteRequest, x_worker_token: str | None = Header(default=None), session: AsyncSession = Depends(get_session)) -> RunJobResponse:
     verify_worker_token(x_worker_token)
     job = await get_job(session, job_id, locked=True)
@@ -185,7 +187,7 @@ async def worker_completed(job_id: int, body: WorkerCompleteRequest, x_worker_to
     return serialize_job(job)
 
 
-@router.post("/integration/worker/jobs/{job_id}/failed", response_model=RunJobResponse)
+@worker_router.post("/integration/worker/jobs/{job_id}/failed", response_model=RunJobResponse)
 async def worker_failed(job_id: int, body: WorkerFailedRequest, x_worker_token: str | None = Header(default=None), session: AsyncSession = Depends(get_session)) -> RunJobResponse:
     verify_worker_token(x_worker_token)
     job = await get_job(session, job_id, locked=True)
@@ -198,7 +200,7 @@ async def worker_failed(job_id: int, body: WorkerFailedRequest, x_worker_token: 
     return serialize_job(job)
 
 
-@router.websocket("/integration/worker/ws")
+@worker_router.websocket("/integration/worker/ws")
 async def worker_websocket(websocket: WebSocket) -> None:
     if not worker_token_valid(websocket.query_params.get("token")):
         await websocket.close(code=1008)
@@ -217,6 +219,12 @@ async def worker_websocket(websocket: WebSocket) -> None:
                 await websocket.send_json({"type": "job.assigned", "job": None if job is None else {"id": job.id, "project_id": job.project_id, "test_case_version_id": job.test_case_version_id, "attempt": job.attempt}})
             elif message_type == "worker.heartbeat":
                 await websocket.send_json({"type": "worker.heartbeat.ack"})
+            elif message_type == "catalog.sync":
+                # Seam for doc 18 / doc 19: a catalog belongs to the installation's project, which this
+                # shared-token socket cannot identify. Once installations exist, validate the summary,
+                # reply catalog.ack {known: hash already stored?}, and let the worker upload the full
+                # catalog.v1 over HTTPS into app.modules.catalog.service.ingest_snapshot(source=WORKER).
+                await websocket.send_json({"type": "error", "code": "INSTALLATION_REQUIRED", "ref_type": "catalog.sync"})
             else:
                 await websocket.send_json({"type": "error", "code": "UNSUPPORTED_MESSAGE"})
     except WebSocketDisconnect:

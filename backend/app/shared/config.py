@@ -22,6 +22,14 @@ class Settings(BaseSettings):
     rag_data_source: str = "postgres"
     cors_origins: str = "http://localhost:3000"
     max_xosc_size_bytes: int = 10 * 1024 * 1024
+    # Scenario-generation Agent (agent/ service). Empty URL disables generation endpoints with 503.
+    agent_service_url: str = "http://localhost:8100"
+    agent_api_key: str = ""
+    agent_timeout_seconds: float = 180.0
+    # USD per 1M tokens for the cost report (defaults: gpt-4o-mini list price, check before relying on it).
+    llm_price_input_per_mtok: float = 0.15
+    llm_price_output_per_mtok: float = 0.60
+    max_catalog_upload_bytes: int = 50 * 1024 * 1024
 
     @field_validator("database_url")
     @classmethod

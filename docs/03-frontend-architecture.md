@@ -16,9 +16,14 @@ frontend/
 │   │   ├── (protected)/
 │   │   │   ├── layout.tsx
 │   │   │   ├── dashboard/page.tsx
-│   │   │   ├── test-cases/
+│   │   │   ├── test-cases/              # Test Case Builder (phiên agent, mock)
 │   │   │   │   ├── page.tsx
-│   │   │   │   ├── new/page.tsx
+│   │   │   │   ├── create/page.tsx
+│   │   │   │   ├── generate/page.tsx
+│   │   │   │   ├── new/page.tsx         # redirect -> /test-cases/create
+│   │   │   │   └── [id]/page.tsx
+│   │   │   ├── scenarios/               # Danh mục test case (catalog)
+│   │   │   │   ├── page.tsx
 │   │   │   │   └── [id]/
 │   │   │   │       ├── page.tsx
 │   │   │   │       └── versions/[versionId]/page.tsx
@@ -80,7 +85,16 @@ features/review/
 
 ## 4. Routes/screens cho demo nghiệm thu
 
-### `/test-cases`
+### `/test-cases` — Test Case Builder (phiên agent)
+
+Một phiên = một lần gửi đầu vào cho Agent, sau đó chỉ duyệt kết quả (không có hội thoại). Danh sách phiên mẫu ở `features/agent-sessions/mock-data.ts`; phiên tạo mới và quyết định duyệt nằm trong `session-store.ts` (bộ nhớ + sessionStorage) đến khi Backend có API phiên.
+
+- `/test-cases`: danh sách phiên (tiêu đề + mô tả + tag, bối cảnh, số kịch bản đang sinh/chờ duyệt/đã duyệt/loại, người tạo, cập nhật); tìm kiếm; nút "Phiên mới". Không có cột trạng thái.
+- `/test-cases/create`: form full width (tiêu đề, mô tả, số test case 1–10, 5 metadata, thẻ, ghi chú). Bấm "Tạo test case" → tạo phiên, chạy Agent nền (`POST /scenario-generations` + `accept`, tối đa 3 song song) và điều hướng ngay sang `/test-cases/[id]`.
+- `/test-cases/[id]`: 2 cột. Trái: đúng các input của form tạo, chỉ xem. Phải: kịch bản đã sinh theo tab trạng thái (đang sinh, chờ duyệt, đã duyệt, từ chối); người có `review:decide` duyệt/từ chối kèm ghi chú.
+- `/test-cases/new`: chuyển hướng sang `/test-cases/create`.
+
+### `/scenarios` — Danh mục test case
 
 - Search text.
 - Filter map/adversary/environment/danger/status/creator/tag.
@@ -92,16 +106,10 @@ features/review/
 URL giữ filter để share/reload:
 
 ```text
-/test-cases?map=Town05&adversary=pedestrian&danger=HIGH&status=APPROVED&page=1
+/scenarios?map=Town05&adversary=pedestrian&danger=HIGH&status=APPROVED&page=1
 ```
 
-### `/test-cases/new`
-
-Form gồm shared 5 required fields + tags + XOSC file/created XOSC reference.
-
-Client validation chỉ để UX; Backend validate lại.
-
-### `/test-cases/[id]`
+### `/scenarios/[id]`
 
 - Logical test case information.
 - Latest version.
@@ -109,7 +117,7 @@ Client validation chỉ để UX; Backend validate lại.
 - Review status.
 - Run history.
 
-### `/test-cases/[id]/versions/[versionId]`
+### `/scenarios/[id]/versions/[versionId]`
 
 - Metadata snapshot.
 - XOSC viewer/download.

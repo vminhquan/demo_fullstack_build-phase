@@ -44,6 +44,7 @@ class VersionResponse(BaseModel):
     danger_level: DangerLevel
     scenario_input: dict[str, Any]
     xosc_artifact_id: int | None
+    catalog_snapshot_id: int | None = None
     change_note: str | None
     created_by: int
     created_at: datetime
@@ -63,6 +64,9 @@ class TestCaseResponse(BaseModel):
     updated_at: datetime
     archived_at: datetime | None
     latest_version: VersionResponse | None
+    # Test Case Builder session that generated the case, and its position in that session.
+    builder_session_id: int | None = None
+    builder_variant_no: int | None = None
 
 
 class PageResponse(BaseModel):

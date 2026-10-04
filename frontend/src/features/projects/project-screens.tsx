@@ -1,6 +1,7 @@
 "use client";
 /* eslint-disable react-hooks/set-state-in-effect */
 
+import { projectPath } from "@/shared/ui/project-path";
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -76,7 +77,7 @@ export function ProjectsScreen() {
     try {
       const project = await api.createProject(session.access_token, name.trim(), description.trim());
       setSession(await api.selectProject(session.access_token, project.id, session.refresh_token));
-      router.replace("/dashboard");
+      router.replace(projectPath(project.id, "/dashboard"));
     } catch (reason) {
       setFormError(errorText(reason, "Không thể tạo Project."));
       setBusy(false);
@@ -85,12 +86,12 @@ export function ProjectsScreen() {
 
   async function openProject(project: Project) {
     if (!session) return;
-    if (session.active_project?.id === project.id) { router.push("/dashboard"); return; }
+    if (session.active_project?.id === project.id) { router.push(projectPath(project.id, "/dashboard")); return; }
     setBusy(true);
     setError("");
     try {
       setSession(await api.selectProject(session.access_token, project.id, session.refresh_token));
-      router.replace("/dashboard");
+      router.replace(projectPath(project.id, "/dashboard"));
     } catch (reason) {
       setError(errorText(reason, "Không thể mở Project."));
       setBusy(false);

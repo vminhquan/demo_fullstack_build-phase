@@ -70,6 +70,8 @@ Khi nhóm chốt tên chính thức của 5 trường, thay tên trong DTO/schem
 16. [15-minio-object-storage.md](docs/15-minio-object-storage.md)
 17. [16-phan-quyen-va-man-hinh.md](docs/16-phan-quyen-va-man-hinh.md) — ai được làm gì, ở màn nào
 18. [17-deploy-render.md](docs/17-deploy-render.md) — triển khai lên Render
+19. [18-worker-carla-vps.md](docs/18-worker-carla-vps.md) — worker CARLA, bảo mật và kết nối với production trên VPS (thiết kế)
+20. [19-agent-sinh-kich-ban.md](docs/19-agent-sinh-kich-ban.md) — Agent sinh kịch bản từ prompt dựa trên dữ liệu CARLA (mặc định / CARLA của người dùng)
 
 ## Tìm kiếm semantic/RAG
 

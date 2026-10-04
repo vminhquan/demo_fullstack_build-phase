@@ -13,3 +13,13 @@ node_modules/
 frontend/.next/
 *.tsbuildinfo
 *.log
+agent/.venv/
+**/.pytest_cache/
+**/.ruff_cache/
+agent/benchmark/results/
+bridge/.venv/
+bridge/.venv-build/
+bridge/build/
+bridge/dist/
+bridge/*.spec
+bridge/*.egg-info/

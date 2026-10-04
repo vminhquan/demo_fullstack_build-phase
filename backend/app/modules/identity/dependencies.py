@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import jwt
-from fastapi import Depends
+from fastapi import Depends, Path, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -71,15 +71,34 @@ async def current_user(
     return user
 
 
+def project_path_param(project_id: int = Path(ge=1, description="Project the request belongs to")) -> int:
+    """Declared on every project-scoped router (/projects/{project_id}/…) so the id is validated and documented."""
+    return project_id
+
+
 async def current_principal(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer),
     session: AsyncSession = Depends(get_session),
 ) -> Principal:
     user, payload = await _authenticated_user(credentials, session)
+    # The project in the URL decides which project the request acts on (membership is checked below);
+    # routes outside /projects/{project_id}/ fall back to the project selected in the token.
     try:
-        project_id = int(payload["project_id"])
+        project_id = int(request.path_params.get("project_id") or payload["project_id"])
     except (KeyError, TypeError, ValueError) as exc:
         raise Forbidden("Select an active project before using this resource") from exc
+    return await _project_principal(session, user, project_id)
+
+
+async def principal_from_token(session: AsyncSession, token: str | None, project_id: int) -> Principal:
+    """Same checks as `current_principal` for callers that cannot send headers (browser WebSockets)."""
+    credentials = HTTPAuthorizationCredentials(scheme="Bearer", credentials=token) if token else None
+    user, _ = await _authenticated_user(credentials, session)
+    return await _project_principal(session, user, project_id)
+
+
+async def _project_principal(session: AsyncSession, user: AuthenticatedUser, project_id: int) -> Principal:
     # Role and responsibilities are read on every request so admin changes apply immediately,
     # not when the access token expires.
     row = (

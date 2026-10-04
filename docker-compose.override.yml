@@ -1,0 +1,35 @@
+# Local dev: `docker compose up` loads this file automatically and mounts the source code into the
+# containers, so code changes reload without a rebuild. Rebuild only when requirements.txt or
+# package.json changes. To run the production images: docker compose -f docker-compose.yml up --build
+services:
+  frontend:
+    build:
+      context: ./frontend
+      target: dev
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
+    volumes:
+      - ./frontend:/app
+      # Anonymous volumes keep the image's Linux node_modules (macOS binaries do not run in Alpine).
+      # After package.json changes: docker compose up --build -V frontend
+      - /app/node_modules
+      - /app/.next
+
+  backend:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "app"]
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini
+
+  migrate:
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini
+
+  agent:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload", "--reload-dir", "app"]
+    volumes:
+      - ./agent/app:/app/app
+      - ./agent/knowledge:/app/knowledge

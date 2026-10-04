@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import secrets
-
 from fastapi import APIRouter, Depends, File, Query, UploadFile, status
 from fastapi.responses import Response
 from sqlalchemy import select
@@ -23,9 +21,11 @@ from app.modules.testcase.schemas import (
 )
 from app.modules.testcase.service import (
     case_response,
+    create_test_case,
     create_version,
     get_case,
     get_version,
+    latest_approved_version,
     update_version,
     upload_xosc,
     version_response,
@@ -47,25 +47,7 @@ async def create_case(
     actor: Principal = Depends(require("testcase:create")),
     session: AsyncSession = Depends(get_session),
 ) -> TestCaseResponse:
-    case = TestCase(
-        project_id=actor.project_id,
-        case_key=f"TEMP-{secrets.token_hex(8).upper()}",
-        title=body.title,
-        description=body.description,
-        created_by=actor.id,
-        versions=[],
-    )
-    session.add(case)
-    await session.flush()
-    case.case_key = f"TC-{case.id:06d}"
-    await record_audit(
-        session,
-        project_id=actor.project_id,
-        actor_user_id=actor.id,
-        action="TEST_CASE_CREATED",
-        entity_type="TEST_CASE",
-        entity_id=case.id,
-    )
+    case = await create_test_case(session, actor, body.title, body.description)
     await session.commit()
     return case_response(case)
 
@@ -77,6 +59,8 @@ async def list_cases(
     environment_code: str | None = None,
     danger_level: str | None = None,
     status_value: str | None = Query(default=None, alias="status"),
+    # Test Suite: match each case on its latest APPROVED version and report that version.
+    approved_only: bool = False,
     creator_id: int | None = None,
     tag: str | None = None,
     q: str | None = None,
@@ -97,13 +81,20 @@ async def list_cases(
         )
     ).all()
 
+    def subject(case: TestCase) -> TestCaseVersion | None:
+        if approved_only:
+            return latest_approved_version(case)
+        return max(case.versions, key=lambda item: item.version_no) if case.versions else None
+
     def matches(case: TestCase) -> bool:
         if creator_id and case.created_by != creator_id:
             return False
         if q and q.lower() not in f"{case.title} {case.description or ''}".lower():
             return False
-        latest = max(case.versions, key=lambda item: item.version_no) if case.versions else None
+        latest = subject(case)
         if latest is None:
+            if approved_only:
+                return False
             return not any(
                 [map_code, adversary_type, environment_code, danger_level, status_value, tag]
             )
@@ -121,7 +112,10 @@ async def list_cases(
     filtered = [case for case in cases if matches(case)]
     start = (page - 1) * page_size
     return PageResponse(
-        items=[case_response(case) for case in filtered[start : start + page_size]],
+        items=[
+            case_response(case, subject(case) if approved_only else None)
+            for case in filtered[start : start + page_size]
+        ],
         page=page,
         page_size=page_size,
         total=len(filtered),
@@ -313,6 +307,7 @@ async def clone_version(
     version = await create_version(session, case, payload, actor)
     # The clone is meant for editing metadata/XOSC; keep the immutable artifact so it can be resubmitted as-is.
     version.xosc_artifact_id = source.xosc_artifact_id
+    version.catalog_snapshot_id = source.catalog_snapshot_id
     await session.commit()
     return version_response(version)
 

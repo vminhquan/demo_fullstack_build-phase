@@ -1,5 +1,6 @@
 "use client";
 
+import { projectPath } from "@/shared/ui/project-path";
 import Link from "next/link";
 import { FormEvent, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -28,7 +29,7 @@ export function AuthScreen({ mode }: { mode: "login" | "register" }) {
           ? await api.login(email, password)
           : await api.register(email, password, displayName);
       setSession(session);
-      router.replace(session.active_project ? "/dashboard" : "/projects");
+      router.replace(session.active_project ? projectPath(session.active_project.id, "/dashboard") : "/projects");
     } catch (reason) {
       setError(
         reason instanceof ApiError

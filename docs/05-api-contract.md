@@ -332,6 +332,19 @@ GET /audit-logs?action=REVIEW_APPROVED
 
 Admin only.
 
+## 9b. CARLA catalog & Agent sinh kịch bản
+
+```http
+GET  /carla-catalog/snapshots?source=DEFAULT|PROJECT
+GET  /carla-catalog/snapshots/{snapshot_id}
+POST /carla-catalog/snapshots/import          # Admin (catalog:manage), body {catalog: catalog.v1, label?}
+POST /scenario-generations                    # testcase:create, body {prompt, catalog_source, catalog_snapshot_id?, seed?}
+GET  /scenario-generations/{generation_id}
+POST /scenario-generations/{generation_id}/accept   # tạo Test Case/version DRAFT + XOSC artifact
+```
+
+Contract, mã lỗi và cách map 5 metadata: [19-agent-sinh-kich-ban.md](19-agent-sinh-kich-ban.md).
+
 ## 10. Integration contract với Worker Luồng A
 
 Worker không thuộc implementation scope của Luồng B. Theo boundary đã chốt ở `01-system-architecture.md`, Worker Luồng A kết nối outbound bằng WebSocket/WSS.

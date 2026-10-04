@@ -6,7 +6,7 @@ from app.shared.infrastructure.models import ResponsibilityCode, RoleCode, Versi
 BASE_PERMISSIONS: frozenset[str] = frozenset({"testcase:read", "suite:read", "suite:run", "member:read"})
 
 ROLE_PERMISSIONS: dict[RoleCode, frozenset[str]] = {
-    RoleCode.ADMIN: frozenset({"member:manage", "project:update", "audit:read"}),
+    RoleCode.ADMIN: frozenset({"member:manage", "project:update", "audit:read", "catalog:import", "odd:manage"}),
     RoleCode.MEMBER: frozenset(),
 }
 
@@ -15,7 +15,7 @@ OWNER_PERMISSIONS: frozenset[str] = frozenset({"project:delete"})
 
 RESPONSIBILITY_PERMISSIONS: dict[ResponsibilityCode, frozenset[str]] = {
     ResponsibilityCode.TESTCASE_CREATE: frozenset(
-        {"testcase:create", "testcase:update_own_draft", "testcase:submit_review", "suite:manage"}
+        {"testcase:create", "testcase:update_own_draft", "testcase:submit_review", "suite:manage", "catalog:import", "odd:manage"}
     ),
     ResponsibilityCode.TESTCASE_REVIEW: frozenset({"review:read", "review:comment", "review:decide"}),
     ResponsibilityCode.TESTCASE_SELF_REVIEW: frozenset({"review:decide_own"}),
@@ -56,7 +56,7 @@ def validate_responsibilities(items: set[ResponsibilityCode]) -> None:
 def ensure_can_decide(version_creator_id: int, actor_id: int, permissions: frozenset[str]) -> None:
     require_permission(permissions, "review:decide")
     if version_creator_id == actor_id and not has_permission(permissions, "review:decide_own"):
-        raise Forbidden("You are not assigned to review your own test cases")
+        raise Forbidden("Bạn không có quyền tự duyệt test case do chính mình tạo")
 
 
 def ensure_can_change_role(target_id: int, project_owner_id: int) -> None:

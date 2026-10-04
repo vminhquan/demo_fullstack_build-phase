@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -136,6 +137,24 @@ class ResultArtifactRole(str, enum.Enum):
     SCREENSHOT = "SCREENSHOT"
     REPORT = "REPORT"
     OTHER = "OTHER"
+
+
+class CatalogSource(str, enum.Enum):
+    DEFAULT = "DEFAULT"  # shipped with the app, visible to every project
+    WORKER = "WORKER"  # synced from the user's CARLA by the Worker (doc 18)
+    IMPORT = "IMPORT"  # uploaded by a project admin (stand-in for WORKER until the Worker exists)
+
+
+class GenerationStatus(str, enum.Enum):
+    COMPLETED = "COMPLETED"
+    ACCEPTED = "ACCEPTED"
+
+
+class BuilderSessionStatus(str, enum.Enum):
+    GENERATING = "GENERATING"
+    COMPLETED = "COMPLETED"  # every variant saved as a test case
+    PARTIAL = "PARTIAL"  # some variants failed
+    FAILED = "FAILED"  # no variant could be generated (or the run was interrupted)
 
 
 class EmbeddingStatus(str, enum.Enum):
@@ -328,6 +347,12 @@ class TestCase(IdTimestampMixin, TimestampMixin, Base):
     description: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Test Case Builder session that generated this case (NULL for cases created another way).
+    builder_session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("builder_sessions.id", ondelete="SET NULL"), index=True
+    )
+    # Position of the case in its builder session (1..target_count).
+    builder_variant_no: Mapped[int | None] = mapped_column(Integer)
     versions: Mapped[list[TestCaseVersion]] = relationship(
         back_populates="test_case",
         cascade="all, delete-orphan",
@@ -361,6 +386,10 @@ class TestCaseVersion(IdTimestampMixin, Base):
         JSONB, default=dict, server_default="{}"
     )
     xosc_artifact_id: Mapped[int | None] = mapped_column(ForeignKey("artifacts.id"))
+    # CARLA data the XOSC was generated against (NULL for hand-written versions).
+    catalog_snapshot_id: Mapped[int | None] = mapped_column(
+        ForeignKey("carla_catalog_snapshots.id", name="fk_tcv_catalog_snapshot")
+    )
     change_note: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -371,6 +400,120 @@ class TestCaseVersion(IdTimestampMixin, Base):
     tags: Mapped[list[Tag]] = relationship(
         secondary="test_case_version_tags", lazy="selectin"
     )
+
+
+class CarlaCatalogSnapshot(IdTimestampMixin, Base):
+    """One catalog.v1 document: maps, blueprints, spawn points and lane waypoints of a CARLA world."""
+
+    __tablename__ = "carla_catalog_snapshots"
+    __table_args__ = (
+        Index("idx_catalog_project_map", "project_id", "map_name", "created_at"),
+        # Re-sending identical data is idempotent; NULLS NOT DISTINCT so DEFAULT rows (project_id NULL) dedupe too.
+        UniqueConstraint("project_id", "content_hash", name="uq_catalog_project_hash", postgresql_nulls_not_distinct=True),
+    )
+
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    source: Mapped[CatalogSource] = mapped_column(Enum(CatalogSource, name="catalog_source"))
+    # Filled by the Worker integration once worker_installations exists (doc 18); no FK until then.
+    worker_installation_id: Mapped[int | None] = mapped_column(BigInteger)
+    carla_version: Mapped[str] = mapped_column(String(64))
+    map_name: Mapped[str] = mapped_column(String(120))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    spawn_point_count: Mapped[int] = mapped_column(Integer)
+    waypoint_count: Mapped[int] = mapped_column(Integer)
+    vehicle_count: Mapped[int] = mapped_column(Integer)
+    walker_count: Mapped[int] = mapped_column(Integer)
+    # Full catalog.v1 JSON (hundreds of KB); deferred so listings stay light.
+    catalog: Mapped[dict[str, Any]] = mapped_column(JSONB, deferred=True)
+    label: Mapped[str | None] = mapped_column(String(200))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    # What the map can host (road types, lanes...), computed once by the Agent from the lane data.
+    map_profile: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
+
+class OddProfile(TimestampMixin, Base):
+    """The project's declared Operational Design Domain: the scope its test cases must cover."""
+
+    __tablename__ = "odd_profiles"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    # OddDeclaration (app/modules/odd/schemas.py): snapshots/maps, road types, weather, lighting, actors, ego, ranges.
+    declaration: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+
+
+class ScenarioGeneration(IdTimestampMixin, Base):
+    """An Agent run (prompt -> grounded XOSC) kept for provenance until a creator saves it as a version."""
+
+    __tablename__ = "scenario_generations"
+    __table_args__ = (Index("idx_generation_project_created", "project_id", "created_at"),)
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    prompt: Mapped[str] = mapped_column(Text)
+    catalog_snapshot_id: Mapped[int] = mapped_column(ForeignKey("carla_catalog_snapshots.id"))
+    status: Mapped[GenerationStatus] = mapped_column(Enum(GenerationStatus, name="generation_status"), default=GenerationStatus.COMPLETED)
+    generation_mode: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str | None] = mapped_column(String(120))
+    # Agent response without the XOSC text: scenario_ir, grounding, validation, threat_score, warnings...
+    result: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
+    xosc: Mapped[str] = mapped_column(Text, deferred=True)
+    xosc_sha256: Mapped[str] = mapped_column(String(64))
+    accepted_version_id: Mapped[int | None] = mapped_column(ForeignKey("test_case_versions.id"))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # sha256 of (prompt, catalog content hash, constraints, seed, auto_repair): identical requests reuse the result.
+    request_hash: Mapped[str | None] = mapped_column(String(64), index=True)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+
+
+class BuilderSession(IdTimestampMixin, Base):
+    """One Test Case Builder request: a description sent to the Agent on the picked maps; each variant becomes a test case."""
+
+    __tablename__ = "builder_sessions"
+    __table_args__ = (Index("idx_builder_session_project_created", "project_id", "created_at"),)
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    title: Mapped[str] = mapped_column(String(300))
+    # USER = typed by the user; AUTO = summarised from the description.
+    title_source: Mapped[str] = mapped_column(String(16), default="USER", server_default="USER")
+    prompt: Mapped[str] = mapped_column(Text)
+    catalog_source: Mapped[str] = mapped_column(String(16), default="DEFAULT", server_default="DEFAULT")
+    # [{"map_code", "ego_vehicle_codes", "adversary_types", "environment_codes", "danger_levels"}] in the user's order.
+    maps: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, server_default="[]")
+    tag_names: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default="[]")
+    target_count: Mapped[int] = mapped_column(Integer, default=10, server_default="10")
+    status: Mapped[BuilderSessionStatus] = mapped_column(
+        Enum(BuilderSessionStatus, name="builder_session_status"), default=BuilderSessionStatus.GENERATING
+    )
+    succeeded_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    failed_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # [{"variant_no", "map_code", "code", "message"}] of variants the Agent could not generate.
+    errors: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, default=list, server_default="[]")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AgentCall(IdTimestampMixin, Base):
+    """Every Agent request (refine or generate), including failures and cache hits: valid-rate and cost reports."""
+
+    __tablename__ = "agent_calls"
+    __table_args__ = (Index("idx_agent_call_project_created", "project_id", "created_at"),)
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    kind: Mapped[str] = mapped_column(String(16))  # REFINE | GENERATE
+    # COMPLETED | REJECTED (Agent 422: guardrail, grounding, not a scenario) | FAILED (Agent down / 5xx)
+    status: Mapped[str] = mapped_column(String(16))
+    error_code: Mapped[str | None] = mapped_column(String(120))
+    generation_id: Mapped[int | None] = mapped_column(ForeignKey("scenario_generations.id", ondelete="SET NULL"))
+    catalog_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("carla_catalog_snapshots.id", ondelete="SET NULL"))
+    generation_mode: Mapped[str | None] = mapped_column(String(32))
+    from_form: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    duration_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
 
 class Tag(IdTimestampMixin, Base):
@@ -630,3 +773,55 @@ class TestCaseSearchDocument(Base):
     # Declared so Alembic autogenerate sees it (otherwise it proposes dropping the column).
     # Deferred: vectors are large and only semantic search reads them.
     embedding: Mapped[list[float] | None] = mapped_column(Vector(768), deferred=True)
+
+
+class Bridge(IdTimestampMixin, Base):
+    """One Scenario Forge Bridge install (one machine with CARLA). Authenticates with a long-lived device token."""
+
+    __tablename__ = "bridges"
+
+    uid: Mapped[str] = mapped_column(String(32), unique=True)
+    # sha256 of the device token; the token itself is only shown to the Bridge once, at first pairing.
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    hostname: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    os: Mapped[str] = mapped_column(String(120), default="", server_default="")
+    bridge_version: Mapped[str] = mapped_column(String(32), default="", server_default="")
+    carla_host: Mapped[str | None] = mapped_column(String(255))
+    carla_port: Mapped[int | None] = mapped_column(Integer)
+    # Last CARLA port probe reported by the Bridge (None = never reported).
+    carla_reachable: Mapped[bool | None] = mapped_column(Boolean)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class BridgeConnection(IdTimestampMixin, Base):
+    """Link between a Bridge and a project. `uid` is the connection id shared by the Bridge, Backend and Frontend."""
+
+    __tablename__ = "bridge_connections"
+    __table_args__ = (UniqueConstraint("bridge_id", "project_id", name="uq_bridge_connection_bridge_project"),)
+
+    uid: Mapped[str] = mapped_column(String(32), unique=True)
+    bridge_id: Mapped[int] = mapped_column(ForeignKey("bridges.id", ondelete="CASCADE"), index=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    paired_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    paired_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    bridge: Mapped[Bridge] = relationship(lazy="joined")
+
+
+class BridgePairCode(IdTimestampMixin, Base):
+    """One-time 6-digit OTP shown on the Start up page; the Bridge redeems it with `pair <code>`."""
+
+    __tablename__ = "bridge_pair_codes"
+    __table_args__ = (Index("idx_bridge_pair_code_hash_active", "code_hash", "expires_at"),)
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # HMAC-SHA256 of the code; the plain code is never stored.
+    code_hash: Mapped[str] = mapped_column(String(64))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    connection_id: Mapped[int | None] = mapped_column(ForeignKey("bridge_connections.id", ondelete="SET NULL"))

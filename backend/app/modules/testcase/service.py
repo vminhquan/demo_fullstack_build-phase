@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import secrets
 from collections.abc import Iterable
 
 from sqlalchemy import func, select
@@ -20,6 +21,7 @@ from app.shared.infrastructure.models import (
     TestCase,
     TestCaseSearchDocument,
     TestCaseVersion,
+    VersionStatus,
 )
 
 
@@ -38,6 +40,7 @@ def version_response(version: TestCaseVersion | None) -> VersionResponse | None:
         danger_level=version.danger_level,
         scenario_input=version.scenario_input,
         xosc_artifact_id=version.xosc_artifact_id,
+        catalog_snapshot_id=version.catalog_snapshot_id,
         change_note=version.change_note,
         created_by=version.created_by,
         created_at=version.created_at,
@@ -48,8 +51,15 @@ def version_response(version: TestCaseVersion | None) -> VersionResponse | None:
     )
 
 
-def case_response(case: TestCase) -> TestCaseResponse:
-    latest = max(case.versions, key=lambda item: item.version_no) if case.versions else None
+def latest_approved_version(case: TestCase) -> TestCaseVersion | None:
+    """Newest version that passed review; later drafts or reviews do not hide it."""
+    approved = [item for item in case.versions if item.status == VersionStatus.APPROVED]
+    return max(approved, key=lambda item: item.version_no) if approved else None
+
+
+def case_response(case: TestCase, version: TestCaseVersion | None = None) -> TestCaseResponse:
+    """`version` overrides the reported `latest_version` (Test Suite reports the latest approved one)."""
+    latest = version or (max(case.versions, key=lambda item: item.version_no) if case.versions else None)
     return TestCaseResponse(
         id=case.id,
         case_key=case.case_key,
@@ -60,7 +70,38 @@ def case_response(case: TestCase) -> TestCaseResponse:
         updated_at=case.updated_at,
         archived_at=case.archived_at,
         latest_version=version_response(latest),
+        builder_session_id=case.builder_session_id,
+        builder_variant_no=case.builder_variant_no,
     )
+
+
+async def create_test_case(
+    session: AsyncSession,
+    actor: Principal,
+    title: str,
+    description: str | None,
+) -> TestCase:
+    require_permission(actor.permissions, "testcase:create")
+    case = TestCase(
+        project_id=actor.project_id,
+        case_key=f"TEMP-{secrets.token_hex(8).upper()}",
+        title=title,
+        description=description,
+        created_by=actor.id,
+        versions=[],
+    )
+    session.add(case)
+    await session.flush()
+    case.case_key = f"TC-{case.id:06d}"
+    await record_audit(
+        session,
+        project_id=actor.project_id,
+        actor_user_id=actor.id,
+        action="TEST_CASE_CREATED",
+        entity_type="TEST_CASE",
+        entity_id=case.id,
+    )
+    return case
 
 
 async def get_case(
