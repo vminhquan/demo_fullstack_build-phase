@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 
-import { api, ApiError, CatalogSnapshot } from "@/lib/api";
+import { API_BASE, api, ApiError, CatalogSnapshot } from "@/lib/api";
 import { useSession } from "@/shared/auth/session-context";
 import { ErrorNotice, formatDate, Loading } from "@/shared/ui/components";
 import { useProjectPath } from "@/shared/ui/project-path";
@@ -114,9 +114,7 @@ export function StartUpScreen() {
               </button>
             </div>
           )}
-          <div className="inline-note">
-            Cài Bridge trên máy có CARLA (Ubuntu / Windows), bấm “Thêm kết nối mới” rồi gõ <code className="session-code">scenario-forge-bridge pair &lt;mã 6 số&gt;</code> trên máy đó.
-          </div>
+          <BridgeInstallGuide />
         </article>
 
         <article className={`panel startup-choice ${usingDefault ? "selected" : ""}`}>
@@ -226,6 +224,107 @@ function BridgeOtp({ pending, live, onRegenerate, onClose }: {
           {live ? "Đang chờ Bridge nhập mã… Trang sẽ tự báo khi kết nối thành công." : "Đang kết nối kênh thông báo… (nếu lâu, hãy tải lại trang)"}
         </div>
       )}
+    </div>
+  );
+}
+
+// pipx installs the CLI straight from the repository's bridge/ folder.
+const BRIDGE_SOURCE = "git+https://github.com/vminhquan/demo_fullstack_build-phase.git#subdirectory=bridge";
+
+type GuideOs = "ubuntu" | "windows";
+type GuideStep = { title: string; note?: string; commands: string[] };
+
+function guideSteps(os: GuideOs, server: string): GuideStep[] {
+  const install: GuideStep = os === "ubuntu"
+    ? { title: "Cài Python, Git và pipx (một lần)", commands: ["sudo apt update && sudo apt install -y python3 python3-venv pipx git", "pipx ensurepath && source ~/.bashrc"] }
+    : {
+      title: "Cài Python, Git và pipx (một lần)",
+      note: "Sau lệnh cuối, đóng PowerShell và mở lại.",
+      commands: ["winget install Python.Python.3.11", "winget install Git.Git", "py -m pip install --user pipx", "py -m pipx ensurepath"],
+    };
+  return [
+    install,
+    { title: "Cài Scenario Forge Bridge", commands: [`pipx install "${BRIDGE_SOURCE}"`, "scenario-forge-bridge --version"] },
+    { title: "Trỏ Bridge tới máy chủ này (một lần)", commands: [`scenario-forge-bridge config --server ${server}`] },
+    {
+      title: "Kiểm tra CARLA (không bắt buộc)",
+      note: "Máy chưa có CARLA vẫn ghép nối được; Bridge chỉ cảnh báo và tự báo khi CARLA được mở sau.",
+      commands: ["scenario-forge-bridge check-carla"],
+    },
+    {
+      title: "Ghép nối",
+      note: "Bấm “Thêm kết nối mới” ở trên để lấy mã 6 số, rồi chạy lệnh dưới trên máy đó. Để cửa sổ mở thì Bridge giữ trạng thái Online.",
+      commands: ["scenario-forge-bridge pair <mã 6 số>"],
+    },
+  ];
+}
+
+const DAILY_COMMANDS: { command: string; hint: string }[] = [
+  { command: "scenario-forge-bridge run", hint: "Bật lại Bridge (Online) sau khi tắt máy hoặc đóng cửa sổ" },
+  { command: "scenario-forge-bridge status", hint: "Xem các Project đã ghép và trạng thái CARLA" },
+  { command: "pipx upgrade scenario-forge-bridge", hint: "Cập nhật lên bản mới" },
+];
+
+/** Collapsible install guide for the Bridge CLI (Ubuntu / Windows), with this site's API address filled in. */
+function BridgeInstallGuide() {
+  const [os, setOs] = useState<GuideOs>("ubuntu");
+  const server = API_BASE.startsWith("http") || typeof window === "undefined" ? API_BASE : `${window.location.origin}${API_BASE}`;
+  const steps = guideSteps(os, server);
+
+  return (
+    <details className="bridge-guide">
+      <summary><Icon name="file" size={14} />Hướng dẫn cài Bridge CLI</summary>
+      <div className="bridge-guide-body">
+        <div className="bridge-guide-tabs" role="tablist" aria-label="Hệ điều hành">
+          {(["ubuntu", "windows"] as const).map((item) => (
+            <button key={item} type="button" role="tab" aria-selected={os === item} className={`button ${os === item ? "primary" : ""}`} onClick={() => setOs(item)}>
+              {item === "ubuntu" ? "Ubuntu" : "Windows (PowerShell)"}
+            </button>
+          ))}
+        </div>
+        <ol className="bridge-guide-steps">
+          {steps.map((step) => (
+            <li key={step.title}>
+              <strong>{step.title}</strong>
+              {step.commands.map((command) => <CommandLine key={command} command={command} />)}
+              {step.note && <div className="field-help">{step.note}</div>}
+            </li>
+          ))}
+        </ol>
+        <div className="bridge-guide-daily">
+          <strong>Dùng hằng ngày</strong>
+          {DAILY_COMMANDS.map((item) => (
+            <div key={item.command}>
+              <CommandLine command={item.command} />
+              <div className="field-help">{item.hint}</div>
+            </div>
+          ))}
+        </div>
+        <div className="inline-note">
+          Không cần cùng mạng: Bridge chỉ kết nối ra ngoài tới máy chủ, máy cài Bridge không phải mở cổng nào. Báo “hết thời gian chờ” thì chạy lại lệnh sau ít giây.
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function CommandLine({ command }: { command: string }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(command);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      setCopied(false);
+    }
+  }
+  return (
+    <div className="command-line">
+      <code>{command}</code>
+      <button type="button" className="button command-copy" onClick={() => void copy()} aria-label={`Sao chép lệnh ${command}`}>
+        {copied ? "Đã chép" : "Chép"}
+      </button>
     </div>
   );
 }

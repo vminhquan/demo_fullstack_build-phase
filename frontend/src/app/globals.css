@@ -956,6 +956,17 @@ a.case-key { display: inline-block; color: var(--blue); }
 }
 .otp-digits.expired .otp-digit { color: var(--fg-secondary); text-decoration: line-through; opacity: .6; }
 .otp-expiry { color: var(--fg-secondary); font-size: 13px; }
+.bridge-guide { border: 1px solid var(--border); border-radius: var(--radius); }
+.bridge-guide > summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 14px; font-weight: 500; cursor: pointer; }
+.bridge-guide[open] > summary { border-bottom: 1px solid var(--border); }
+.bridge-guide-body { display: grid; gap: 14px; padding: 12px; }
+.bridge-guide-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.bridge-guide-steps { display: grid; gap: 12px; margin: 0; padding-left: 20px; }
+.bridge-guide-steps li { display: grid; gap: 6px; }
+.bridge-guide-daily { display: grid; gap: 8px; }
+.command-line { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 6px 6px 10px; border-radius: var(--radius); background: var(--bg-hover); }
+.command-line code { flex: 1; min-width: 0; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
+.command-copy { flex: 0 0 auto; height: 26px; padding: 0 10px; font-size: 12px; }
 .bridge-otp-success { border-style: solid; border-color: var(--green); background: var(--green-soft); }
 .bridge-success-title { display: flex; align-items: center; gap: 6px; color: var(--green); }
 .otp-expiry.expired { color: var(--red); }
