@@ -66,13 +66,26 @@ export function useBridges(projectId: number | null | undefined) {
         void reload();
         return;
       }
+      if (event.type === "catalog.sync.progress" || event.type === "catalog.sync.done") {
+        setBridges((items) => items?.map((item) => item.connection_uid === event.connection_uid ? { ...item, sync: event.sync } : item) ?? items);
+        if (event.type === "catalog.sync.done") void reload(); // refresh synced_maps / last_synced_at
+        return;
+      }
+      if (event.type === "catalog.synced") {
+        setBridges((items) => items?.map((item) => item.connection_uid === event.connection_uid && !item.synced_maps.includes(event.snapshot.map_name)
+          ? { ...item, synced_maps: [...item.synced_maps, event.snapshot.map_name].sort() }
+          : item) ?? items);
+        return;
+      }
       if (event.type === "bridge.unpaired") {
         setBridges((items) => items?.filter((item) => item.connection_uid !== event.connection_uid) ?? items);
         return;
       }
       // online / offline / CARLA probe changed
-      setBridges((items) => items?.map((item) => item.connection_uid === event.connection_uid
-        ? { ...item, online: event.online, carla_reachable: event.carla_reachable, last_seen_at: new Date().toISOString() }
+      if (event.type !== "bridge.online" && event.type !== "bridge.offline" && event.type !== "bridge.status") return;
+      const { connection_uid: uid, online, carla_reachable: reachable } = event;
+      setBridges((items) => items?.map((item) => item.connection_uid === uid
+        ? { ...item, online, carla_reachable: reachable, last_seen_at: new Date().toISOString() }
         : item) ?? items);
     };
 
@@ -130,5 +143,16 @@ export function useBridges(projectId: number | null | undefined) {
     }
   }, []);
 
-  return { bridges: bridges ?? [], loaded: bridges !== null, pending, live, error, reload, requestPair, cancelPair, remove };
+  /** Asks the Bridge to read every CARLA map and upload it to this project; progress arrives over the socket. */
+  const sync = useCallback(async (connectionUid: string) => {
+    if (!tokenRef.current) return;
+    try {
+      await api.syncBridgeCatalog(tokenRef.current, connectionUid);
+      setError("");
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "Không gửi được yêu cầu đồng bộ.");
+    }
+  }, []);
+
+  return { bridges: bridges ?? [], loaded: bridges !== null, pending, live, error, reload, requestPair, cancelPair, remove, sync };
 }

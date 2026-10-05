@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import logging
+import secrets
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, Request, WebSocket, WebSocketDisconnect, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.bridge.hub import hub
 from app.modules.bridge.schemas import (
+    BridgeCatalogStored,
+    BridgeCatalogUpload,
     BridgeConnectionResponse,
+    CatalogSyncRequest,
+    CatalogSyncStarted,
     BridgePairRequest,
     BridgePairResponse,
     ConnectionInfo,
@@ -24,11 +30,14 @@ from app.modules.bridge.service import (
     now,
     redeem_pair_code,
 )
+from app.modules.catalog.importers import _hinted_base_type
+from app.modules.catalog.service import ingest_snapshot, parse_catalog
 from app.modules.identity.dependencies import Principal, principal_from_token, require
-from app.shared.domain.errors import DomainError, NotFound, ValidationFailed
+from app.shared.config import get_settings
+from app.shared.domain.errors import Conflict, DomainError, NotFound, ValidationFailed
 from app.shared.infrastructure.audit import record_audit
 from app.shared.infrastructure.db import SessionFactory, get_session
-from app.shared.infrastructure.models import Bridge, BridgeConnection, User
+from app.shared.infrastructure.models import Bridge, BridgeConnection, CarlaCatalogSnapshot, CatalogSource, User
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +53,11 @@ def bearer_token(value: str | None) -> str | None:
     return None
 
 
-def connection_view(connection: BridgeConnection, names: dict[int, str]) -> BridgeConnectionResponse:
+def connection_view(
+    connection: BridgeConnection, names: dict[int, str], synced: dict[int, tuple[list[str], datetime | None]] | None = None
+) -> BridgeConnectionResponse:
     bridge = connection.bridge
+    maps, last_synced = (synced or {}).get(bridge.id, ([], None))
     return BridgeConnectionResponse(
         connection_uid=connection.uid,
         bridge_uid=bridge.uid,
@@ -61,6 +73,9 @@ def connection_view(connection: BridgeConnection, names: dict[int, str]) -> Brid
         paired_at=connection.paired_at,
         paired_by=connection.paired_by,
         paired_by_name=names.get(connection.paired_by),
+        synced_maps=maps,
+        last_synced_at=last_synced,
+        sync=hub.syncs.get(connection.uid),
     )
 
 
@@ -76,7 +91,27 @@ async def project_connections(session: AsyncSession, project_id: int) -> list[Br
     user_ids = {item.paired_by for item in connections}
     users = (await session.scalars(select(User).where(User.id.in_(user_ids)))).all() if user_ids else []
     names = {user.id: user.display_name or user.email for user in users}
-    return [connection_view(item, names) for item in connections]
+    return [connection_view(item, names, await synced_maps(session, project_id)) for item in connections]
+
+
+async def synced_maps(session: AsyncSession, project_id: int) -> dict[int, tuple[list[str], datetime | None]]:
+    """Maps each Bridge (worker_installation_id) synced into the project, with the newest snapshot time."""
+    rows = (
+        await session.execute(
+            select(CarlaCatalogSnapshot.worker_installation_id, CarlaCatalogSnapshot.map_name, func.max(CarlaCatalogSnapshot.created_at))
+            .where(
+                CarlaCatalogSnapshot.project_id == project_id,
+                CarlaCatalogSnapshot.source == CatalogSource.WORKER,
+                CarlaCatalogSnapshot.worker_installation_id.is_not(None),
+            )
+            .group_by(CarlaCatalogSnapshot.worker_installation_id, CarlaCatalogSnapshot.map_name)
+        )
+    ).all()
+    result: dict[int, tuple[list[str], datetime | None]] = {}
+    for bridge_id, map_name, created_at in rows:
+        maps, latest = result.get(bridge_id, ([], None))
+        result[bridge_id] = (sorted([*maps, map_name]), max(filter(None, [latest, created_at])))
+    return result
 
 
 async def publish_bridge_status(session: AsyncSession, bridge: Bridge, event: str) -> None:
@@ -134,6 +169,43 @@ async def unpair_bridge(connection_uid: str, actor: Principal = Depends(require(
     await session.commit()
     await hub.send_bridge(connection.bridge_id, {"type": "connection.revoked", "connection_uid": connection.uid, "project_id": actor.project_id})
     await hub.publish_project(actor.project_id, {"type": "bridge.unpaired", "connection_uid": connection.uid})
+
+
+@router.post("/{connection_uid}/sync", response_model=CatalogSyncStarted, status_code=status.HTTP_202_ACCEPTED)
+async def sync_bridge_catalog(
+    connection_uid: str,
+    body: CatalogSyncRequest | None = None,
+    actor: Principal = Depends(require("testcase:read")),
+    session: AsyncSession = Depends(get_session),
+) -> CatalogSyncStarted:
+    """Asks the Bridge (through its WebSocket) to read every CARLA map and upload it to this project."""
+    connection = await active_project_connection(session, actor.project_id, connection_uid)
+    current = hub.syncs.get(connection.uid)
+    if current and not current.get("finished"):
+        raise Conflict("Bridge đang đồng bộ dữ liệu CARLA, hãy chờ lần đồng bộ hiện tại xong")
+    request_id = secrets.token_hex(8)
+    sent = await hub.send_bridge(
+        connection.bridge_id,
+        {"type": "catalog.sync.request", "request_id": request_id, "connection_uid": connection.uid, "maps": body.maps if body else None},
+    )
+    if not sent:
+        raise Conflict("Bridge đang offline. Hãy chạy `scenario-forge-bridge run` trên máy có CARLA.")
+    state = {"request_id": request_id, "started_at": now().isoformat(), "finished": False, "index": 0, "total": None,
+             "map_name": None, "status": "requested", "synced": [], "failed": []}
+    hub.syncs[connection.uid] = state
+    await hub.publish_project(actor.project_id, {"type": "catalog.sync.progress", "connection_uid": connection.uid, "sync": state})
+    return CatalogSyncStarted(request_id=request_id)
+
+
+async def active_project_connection(session: AsyncSession, project_id: int, connection_uid: str) -> BridgeConnection:
+    connection = await session.scalar(
+        select(BridgeConnection).where(
+            BridgeConnection.uid == connection_uid, BridgeConnection.project_id == project_id, BridgeConnection.revoked_at.is_(None)
+        )
+    )
+    if connection is None:
+        raise NotFound("Bridge connection not found")
+    return connection
 
 
 # ---- Bridge (device) ----
@@ -195,6 +267,81 @@ async def bridge_unpair(
     await hub.publish_project(connection.project_id, {"type": "bridge.unpaired", "connection_uid": connection.uid})
 
 
+@public_router.post("/bridge/catalog", response_model=BridgeCatalogStored)
+async def bridge_upload_catalog(
+    request: Request, authorization: str | None = Header(default=None), session: AsyncSession = Depends(get_session)
+) -> BridgeCatalogStored:
+    """One map's catalog.v1 read from the user's CARLA, stored as a WORKER snapshot of the connection's project."""
+    bridge = await bridge_from_token(session, bearer_token(authorization))
+    limit = get_settings().max_catalog_upload_bytes
+    raw = await request.body()
+    if len(raw) > limit:
+        raise ValidationFailed(f"Catalog exceeds {limit // (1024 * 1024)} MB")
+    try:
+        body = BridgeCatalogUpload.model_validate_json(raw)
+    except ValueError as exc:
+        raise ValidationFailed("Invalid catalog upload", {"errors": str(exc)[:2000]}) from exc
+    connection = await session.scalar(
+        select(BridgeConnection).where(
+            BridgeConnection.uid == body.connection_uid, BridgeConnection.bridge_id == bridge.id, BridgeConnection.revoked_at.is_(None)
+        )
+    )
+    if connection is None:
+        raise NotFound("Bridge connection not found")
+    # Some CARLA blueprints have no base_type attribute: infer it like the file importer does.
+    for vehicle in body.catalog.get("vehicles") or []:
+        if isinstance(vehicle, dict) and not vehicle.get("base_type") and isinstance(vehicle.get("id"), str):
+            vehicle["base_type"] = _hinted_base_type(vehicle["id"])
+    snapshot, created = await ingest_snapshot(
+        session,
+        parse_catalog(body.catalog),
+        source=CatalogSource.WORKER,
+        project_id=connection.project_id,
+        worker_installation_id=bridge.id,
+        label=f"{bridge.name} · {bridge.uid}"[:200],
+    )
+    bridge.last_seen_at = now()
+    await session.commit()
+    await hub.publish_project(
+        connection.project_id,
+        {"type": "catalog.synced", "connection_uid": connection.uid, "request_id": body.request_id,
+         "snapshot": {"id": snapshot.id, "map_name": snapshot.map_name, "carla_version": snapshot.carla_version, "created": created}},
+    )
+    return BridgeCatalogStored(snapshot_id=snapshot.id, map_name=snapshot.map_name, created=created)
+
+
+async def relay_sync(bridge_id: int, kind: str, message: dict) -> None:
+    """Bridge progress of a catalog sync: keep the latest state and forward it to the project's pages."""
+    connection_uid = str(message.get("connection_uid") or "")
+    async with SessionFactory() as session:
+        connection = await session.scalar(
+            select(BridgeConnection).where(
+                BridgeConnection.uid == connection_uid, BridgeConnection.bridge_id == bridge_id, BridgeConnection.revoked_at.is_(None)
+            )
+        )
+    if connection is None:
+        return
+    state = dict(hub.syncs.get(connection_uid) or {"request_id": message.get("request_id"), "synced": [], "failed": []})
+    if kind == "catalog.sync.progress":
+        state.update(
+            finished=False, index=message.get("index"), total=message.get("total"),
+            map_name=message.get("map_name"), status=message.get("status"),
+        )
+        if message.get("status") == "uploaded" and message.get("map_name") not in state["synced"]:
+            state["synced"] = [*state["synced"], message.get("map_name")]
+        if message.get("status") == "failed":
+            state["failed"] = [*state["failed"], {"map_name": message.get("map_name"), "error": str(message.get("error"))[:500]}]
+    else:
+        state.update(
+            finished=True, finished_at=now().isoformat(), status="done",
+            synced=[str(item) for item in message.get("synced") or []][:200],
+            failed=[{"map_name": item.get("map_name"), "error": str(item.get("error"))[:500]}
+                    for item in message.get("failed") or [] if isinstance(item, dict)][:200],
+        )
+    hub.syncs[connection_uid] = state
+    await hub.publish_project(connection.project_id, {"type": kind, "connection_uid": connection_uid, "sync": state})
+
+
 @public_router.websocket("/bridge/ws")
 async def bridge_socket(websocket: WebSocket) -> None:
     """Long-lived Bridge channel. Auth: `Authorization: Bearer <device token>`."""
@@ -240,6 +387,8 @@ async def bridge_socket(websocket: WebSocket) -> None:
                     if changed:
                         await publish_bridge_status(session, bridge, "bridge.status")
                 await websocket.send_json({"type": "bridge.heartbeat.ack", "server_time": now().isoformat()})
+            elif kind in ("catalog.sync.progress", "catalog.sync.done"):
+                await relay_sync(bridge_id, kind, message)
             else:
                 await websocket.send_json({"type": "error", "code": "UNSUPPORTED_MESSAGE", "ref_type": kind})
     except WebSocketDisconnect:
@@ -252,6 +401,17 @@ async def bridge_socket(websocket: WebSocket) -> None:
                 bridge = await session.get(Bridge, bridge_id)
                 if bridge is not None:
                     await publish_bridge_status(session, bridge, "bridge.offline")
+                    # A sync cannot finish without the socket: close it so the page stops waiting.
+                    for connection in await active_connections(session, bridge_id):
+                        state = hub.syncs.get(connection.connection_uid)
+                        if state and not state.get("finished"):
+                            state = {**state, "finished": True, "finished_at": now().isoformat(), "status": "done",
+                                     "failed": [*state.get("failed", []), {"map_name": None, "error": "Bridge mất kết nối giữa lúc đồng bộ"}]}
+                            hub.syncs[connection.connection_uid] = state
+                            await hub.publish_project(
+                                connection.project_id,
+                                {"type": "catalog.sync.done", "connection_uid": connection.connection_uid, "sync": state},
+                            )
 
 
 # ---- Frontend live events ----

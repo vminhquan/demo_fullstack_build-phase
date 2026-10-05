@@ -10,7 +10,7 @@ import { useProjectPath } from "@/shared/ui/project-path";
 import { Icon } from "@/shared/ui/icons";
 import { carlaStatus, useCarlaDemo } from "@/features/startup/carla-demo";
 
-import { isPairExpired, OTP_LENGTH, PendingPair, useBridges } from "./bridge-store";
+import { Bridge, isPairExpired, OTP_LENGTH, PendingPair, useBridges } from "./bridge-store";
 
 /* /start-up — first step of a project: pick where CARLA data comes from. */
 export function StartUpScreen() {
@@ -89,8 +89,17 @@ export function StartUpScreen() {
                       {" · "}ghép {formatDate(item.paired_at)}{item.paired_by_name ? ` bởi ${item.paired_by_name}` : ""}
                       {" · "}lần cuối {formatDate(item.last_seen_at)}
                     </div>
+                    <BridgeSyncStatus bridge={item} />
                   </div>
                   <div className="bridge-item-actions">
+                    <button
+                      className="button primary"
+                      disabled={!item.online || !item.carla_reachable || (item.sync !== null && !item.sync.finished)}
+                      title={!item.online ? "Bridge đang offline" : !item.carla_reachable ? "Chưa thấy CARLA trên máy này" : "Đọc mọi map từ CARLA của máy này"}
+                      onClick={() => void bridges.sync(item.connection_uid)}
+                    >
+                      <Icon name="refresh" size={14} />Đồng bộ dữ liệu CARLA
+                    </button>
                     <button className="button" onClick={() => { if (window.confirm(`Ngắt kết nối ${item.name} (${item.connection_uid}) khỏi Project?`)) void bridges.remove(item.connection_uid); }}>
                       <Icon name="trash" size={14} />Ngắt
                     </button>
@@ -252,6 +261,11 @@ function guideSteps(os: GuideOs, server: string): GuideStep[] {
       commands: ["scenario-forge-bridge check-carla"],
     },
     {
+      title: "Cài gói Python carla để đồng bộ dữ liệu map",
+      note: "Phiên bản phải trùng với CARLA server (xem trong cửa sổ CARLA hoặc `status`). Chỉ cần khi bấm “Đồng bộ dữ liệu CARLA”; ghép nối không cần gói này.",
+      commands: ["pipx inject scenario-forge-bridge carla==0.9.16"],
+    },
+    {
       title: "Ghép nối",
       note: "Bấm “Thêm kết nối mới” ở trên để lấy mã 6 số, rồi chạy lệnh dưới trên máy đó. Để cửa sổ mở thì Bridge giữ trạng thái Online.",
       commands: ["scenario-forge-bridge pair <mã 6 số>"],
@@ -262,6 +276,7 @@ function guideSteps(os: GuideOs, server: string): GuideStep[] {
 const DAILY_COMMANDS: { command: string; hint: string }[] = [
   { command: "scenario-forge-bridge run", hint: "Bật lại Bridge (Online) sau khi tắt máy hoặc đóng cửa sổ" },
   { command: "scenario-forge-bridge status", hint: "Xem các Project đã ghép và trạng thái CARLA" },
+  { command: "scenario-forge-bridge sync", hint: "Đồng bộ dữ liệu mọi map của CARLA (giống nút “Đồng bộ dữ liệu CARLA”)" },
   { command: "pipx upgrade scenario-forge-bridge", hint: "Cập nhật lên bản mới" },
 ];
 
@@ -325,6 +340,41 @@ function CommandLine({ command }: { command: string }) {
       <button type="button" className="button command-copy" onClick={() => void copy()} aria-label={`Sao chép lệnh ${command}`}>
         {copied ? "Đã chép" : "Chép"}
       </button>
+    </div>
+  );
+}
+
+/** What the Bridge synced from its CARLA, and the progress of a sync in flight. */
+function BridgeSyncStatus({ bridge }: { bridge: Bridge }) {
+  const sync = bridge.sync;
+  const running = sync !== null && !sync.finished;
+  return (
+    <div className="bridge-sync">
+      {running && (
+        <div className="bridge-sync-progress">
+          <span className="spinner" />
+          {sync.status === "requested" || !sync.total
+            ? "Đã gửi yêu cầu, Bridge đang kết nối CARLA…"
+            : `Đang đọc map ${sync.index}/${sync.total}: ${sync.map_name} (Bridge mở lần lượt từng map trong CARLA)`}
+          {sync.total ? <progress max={sync.total} value={Math.max(0, (sync.index ?? 1) - (sync.status === "loading" ? 1 : 0))} /> : null}
+        </div>
+      )}
+      {sync?.finished && (
+        <div className={sync.failed.length ? "bridge-sync-result warn" : "bridge-sync-result"}>
+          Lần đồng bộ gần nhất: {sync.synced.length} map thành công{sync.failed.length ? `, ${sync.failed.length} lỗi` : ""}.
+          {sync.failed.map((item, index) => (
+            <div key={index} className="case-key">✗ {item.map_name ?? "CARLA"}: {item.error}</div>
+          ))}
+        </div>
+      )}
+      {bridge.synced_maps.length > 0 ? (
+        <div className="bridge-sync-maps">
+          <span className="case-key">Đã đồng bộ {bridge.synced_maps.length} map{bridge.last_synced_at ? ` · dữ liệu mới nhất ${formatDate(bridge.last_synced_at)}` : ""}:</span>
+          <div>{bridge.synced_maps.map((map) => <span key={map} className="tag">{map}</span>)}</div>
+        </div>
+      ) : (
+        !running && <div className="case-key">Chưa đồng bộ dữ liệu CARLA. Mở CARLA trên máy này rồi bấm “Đồng bộ dữ liệu CARLA”.</div>
+      )}
     </div>
   );
 }

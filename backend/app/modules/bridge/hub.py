@@ -19,6 +19,8 @@ class BridgeHub:
     def __init__(self) -> None:
         self._project_listeners: dict[int, set[WebSocket]] = defaultdict(set)
         self._bridges: dict[int, WebSocket] = {}
+        # connection_uid -> latest catalog sync state (in flight, or finished since this process started).
+        self.syncs: dict[str, dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
     # Frontend listeners (Start up / Test Suite pages)

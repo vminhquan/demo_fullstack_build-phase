@@ -58,13 +58,23 @@ export type BridgeConnection = {
   connection_uid: string; bridge_uid: string; name: string; hostname: string; os: string; bridge_version: string; online: boolean;
   carla_host: string | null; carla_port: number | null; carla_reachable: boolean | null; last_seen_at: string | null;
   paired_at: string; paired_by: number; paired_by_name: string | null;
+  /** Maps this Bridge synced into the project (WORKER catalog snapshots). */
+  synced_maps: string[]; last_synced_at: string | null; sync: BridgeSyncState | null;
+};
+/** Catalog sync in flight (or the last one finished): which map the Bridge is reading and what was stored. */
+export type BridgeSyncState = {
+  request_id: string | null; finished: boolean; status: "requested" | "loading" | "uploaded" | "failed" | "done" | null;
+  index: number | null; total: number | null; map_name: string | null;
+  synced: string[]; failed: { map_name: string | null; error: string }[]; started_at?: string; finished_at?: string;
 };
 export type BridgePairCode = { id: number; code: string; expires_at: string; ttl_seconds: number };
 export type BridgeEvent =
   | { type: "ready" }
   | { type: "bridge.paired"; pair_code_id: number; connection: BridgeConnection | null }
   | { type: "bridge.online" | "bridge.offline" | "bridge.status"; connection_uid: string; bridge_uid: string; online: boolean; carla_reachable: boolean | null }
-  | { type: "bridge.unpaired"; connection_uid: string };
+  | { type: "bridge.unpaired"; connection_uid: string }
+  | { type: "catalog.sync.progress" | "catalog.sync.done"; connection_uid: string; sync: BridgeSyncState }
+  | { type: "catalog.synced"; connection_uid: string; snapshot: { id: number; map_name: string; carla_version: string; created: boolean } };
 export type BuilderError = { variant_no: number; map_code: string; code: string; message: string };
 export type BuilderSessionDetail = BuilderSession & { errors: BuilderError[]; test_cases: TestCase[] };
 export type TestCasePage = { items: TestCase[]; page: number; page_size: number; total: number };
@@ -291,6 +301,8 @@ export const api = {
   cancelBridgePairCode: (token: string, id: Id) => request<void>(`/bridges/pair-codes/${id}`, { method: "DELETE" }, token),
   listBridges: (token: string) => request<BridgeConnection[]>("/bridges", {}, token),
   unpairBridge: (token: string, connectionUid: string) => request<void>(`/bridges/${encodeURIComponent(connectionUid)}`, { method: "DELETE" }, token),
+  syncBridgeCatalog: (token: string, connectionUid: string, maps?: string[]) =>
+    request<{ request_id: string }>(`/bridges/${encodeURIComponent(connectionUid)}/sync`, { method: "POST", body: JSON.stringify({ maps: maps ?? null }) }, token),
   submitReview: (token: string, versionId: Id, message: string) => request<Review>(`/test-case-versions/${versionId}/submit-review`, { method: "POST", body: JSON.stringify({ message }) }, token),
   // "open": waiting for a decision; "resolved": decision history. Members without review permission only get their own.
   listReviews: (token: string, filter: "open" | "resolved" = "open") => request<Review[]>(filter === "resolved" ? "/reviews?resolved_only=true" : "/reviews?open_only=true", {}, token),

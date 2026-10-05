@@ -9,7 +9,9 @@ from collections.abc import Callable
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidURI
 
+from scenario_forge_bridge import api
 from scenario_forge_bridge import config as config_store
+from scenario_forge_bridge.carla_catalog import CarlaUnavailable, collect
 from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.config import BridgeConfig, Connection
 
@@ -35,6 +37,65 @@ async def _heartbeats(ws: ClientConnection, cfg: BridgeConfig, log: Log) -> None
         await asyncio.sleep(HEARTBEAT_SECONDS)
 
 
+async def _sync_catalog(ws: ClientConnection, cfg: BridgeConfig, token: str, message: dict, log: Log) -> None:
+    """Web asked for this machine's CARLA data: read every map and upload it to the requesting project."""
+    request_id, connection_uid = message.get("request_id"), message["connection_uid"]
+    loop = asyncio.get_running_loop()
+    events: asyncio.Queue = asyncio.Queue()
+
+    async def send(kind: str, **fields) -> None:
+        await ws.send(json.dumps({"type": kind, "request_id": request_id, "connection_uid": connection_uid, **fields}))
+
+    def worker() -> None:
+        # Runs in a thread: CARLA calls block (loading a map takes seconds to minutes).
+        try:
+            for result in collect(cfg.carla_host, cfg.carla_port, maps=message.get("maps"),
+                                  on_loading=lambda i, n, name: loop.call_soon_threadsafe(events.put_nowait, ("loading", i, n, name))):
+                loop.call_soon_threadsafe(events.put_nowait, ("result", result))
+        except CarlaUnavailable as exc:
+            loop.call_soon_threadsafe(events.put_nowait, ("fatal", str(exc)))
+        except Exception as exc:  # noqa: BLE001
+            loop.call_soon_threadsafe(events.put_nowait, ("fatal", f"Lỗi khi đọc CARLA: {exc}"))
+        finally:
+            loop.call_soon_threadsafe(events.put_nowait, ("end",))
+
+    log(f"Nhận yêu cầu đồng bộ dữ liệu CARLA ({connection_uid}).")
+    thread = asyncio.create_task(asyncio.to_thread(worker))
+    synced, failed = [], []
+    while True:
+        event = await events.get()
+        if event[0] == "loading":
+            _, index, total, name = event
+            log(f"Đang đọc map {index}/{total}: {name}")
+            await send("catalog.sync.progress", index=index, total=total, map_name=name, status="loading")
+        elif event[0] == "result":
+            result = event[1]
+            if result.error:
+                failed.append({"map_name": result.map_name, "error": result.error})
+                log(f"  ✗ {result.map_name}: {result.error}")
+                await send("catalog.sync.progress", index=result.index, total=result.total, map_name=result.map_name, status="failed", error=result.error)
+                continue
+            try:
+                stored = await asyncio.to_thread(api.upload_catalog, cfg.server, token, connection_uid, result.catalog, request_id)
+            except api.BridgeApiError as exc:
+                failed.append({"map_name": result.map_name, "error": str(exc)})
+                log(f"  ✗ {result.map_name}: {exc}")
+                await send("catalog.sync.progress", index=result.index, total=result.total, map_name=result.map_name, status="failed", error=str(exc))
+                continue
+            synced.append(result.map_name)
+            log(f"  ✓ {result.map_name}: {len(result.catalog['spawn_points'])} spawn point, {len(result.catalog['waypoints'])} waypoint")
+            await send("catalog.sync.progress", index=result.index, total=result.total, map_name=result.map_name, status="uploaded",
+                       snapshot_id=stored.get("snapshot_id"))
+        elif event[0] == "fatal":
+            failed.append({"map_name": None, "error": event[1]})
+            log(event[1])
+        else:
+            break
+    await thread
+    log(f"Đồng bộ xong: {len(synced)} map thành công, {len(failed)} lỗi.")
+    await send("catalog.sync.done", synced=synced, failed=failed)
+
+
 def _apply_connections(cfg: BridgeConfig, items: list[dict]) -> None:
     cfg.connections = [Connection(**{key: item[key] for key in Connection.__dataclass_fields__}) for item in items]
     config_store.save(cfg)
@@ -50,6 +111,7 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
         ping_timeout=20,
     ) as ws:
         heartbeat = asyncio.create_task(_heartbeats(ws, cfg, log))
+        sync_task: asyncio.Task | None = None
         try:
             async for raw in ws:
                 message = json.loads(raw)
@@ -74,10 +136,20 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
                     if stop_when_unlinked and not cfg.connections:
                         log("Không còn project nào được ghép. Bridge dừng.")
                         return True
+                elif kind == "catalog.sync.request":
+                    if sync_task is not None and not sync_task.done():
+                        await ws.send(json.dumps({"type": "catalog.sync.done", "request_id": message.get("request_id"),
+                                                  "connection_uid": message.get("connection_uid"), "synced": [],
+                                                  "failed": [{"map_name": None, "error": "Bridge đang đồng bộ một yêu cầu khác"}]}))
+                    else:
+                        # Heartbeats and other messages keep flowing while the maps load.
+                        sync_task = asyncio.create_task(_sync_catalog(ws, cfg, token, message, log))
                 elif kind == "error":
                     log(f"Máy chủ báo lỗi: {message.get('code')}")
         finally:
             heartbeat.cancel()
+            if sync_task is not None:
+                sync_task.cancel()
     return False
 
 

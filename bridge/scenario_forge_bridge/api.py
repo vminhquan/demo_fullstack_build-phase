@@ -51,3 +51,16 @@ def unpair(server: str, token: str, connection_uid: str) -> None:
         raise BridgeApiError(f"Không kết nối được tới máy chủ {server}: {exc}") from exc
     if response.status_code not in (204, 404):
         raise BridgeApiError(_error_message(response), response.status_code)
+
+
+def upload_catalog(server: str, token: str, connection_uid: str, catalog: dict, request_id: str | None = None) -> dict:
+    """Sends one map's catalog.v1 to the project of `connection_uid`. Returns {snapshot_id, map_name, created}."""
+    body = {"connection_uid": connection_uid, "request_id": request_id, "catalog": catalog}
+    try:
+        # A big map is a few MB of JSON: allow time on slow uplinks.
+        response = httpx.post(f"{server.rstrip('/')}/bridge/catalog", json=body, headers=_headers(token), timeout=180)
+    except httpx.HTTPError as exc:
+        raise BridgeApiError(f"Không gửi được dữ liệu map lên máy chủ: {exc}") from exc
+    if response.status_code not in (200, 201):
+        raise BridgeApiError(_error_message(response), response.status_code)
+    return response.json()

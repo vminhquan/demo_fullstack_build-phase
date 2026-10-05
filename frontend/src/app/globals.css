@@ -976,6 +976,12 @@ a.case-key { display: inline-block; color: var(--blue); }
 .command-line { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 6px 6px 10px; border-radius: var(--radius); background: var(--bg-hover); }
 .command-line code { flex: 1; min-width: 0; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
 .command-copy { flex: 0 0 auto; height: 26px; padding: 0 10px; font-size: 12px; }
+.bridge-sync { display: grid; gap: 6px; margin-top: 8px; }
+.bridge-sync-progress { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.bridge-sync-progress progress { flex: 1 1 160px; height: 6px; }
+.bridge-sync-result { font-size: 13px; color: var(--green); }
+.bridge-sync-result.warn { color: var(--amber); }
+.bridge-sync-maps { display: grid; gap: 4px; }
 .bridge-otp-success { border-style: solid; border-color: var(--green); background: var(--green-soft); }
 .bridge-success-title { display: flex; align-items: center; gap: 6px; color: var(--green); }
 .otp-expiry.expired { color: var(--red); }

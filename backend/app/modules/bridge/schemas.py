@@ -56,3 +56,29 @@ class BridgeConnectionResponse(BaseModel):
     paired_at: datetime
     paired_by: int
     paired_by_name: str | None
+    # CARLA data this Bridge synced into the project (catalog snapshots with source WORKER).
+    synced_maps: list[str] = Field(default_factory=list)
+    last_synced_at: datetime | None = None
+    # Live progress of a sync in flight (or the last one finished since the backend started), else None.
+    sync: dict | None = None
+
+
+class CatalogSyncRequest(BaseModel):
+    # Map names to read; None = every map the user's CARLA has.
+    maps: list[str] | None = Field(default=None, max_length=100)
+
+
+class CatalogSyncStarted(BaseModel):
+    request_id: str
+
+
+class BridgeCatalogUpload(BaseModel):
+    connection_uid: str = Field(max_length=32)
+    request_id: str | None = Field(default=None, max_length=64)
+    catalog: dict
+
+
+class BridgeCatalogStored(BaseModel):
+    snapshot_id: int
+    map_name: str
+    created: bool

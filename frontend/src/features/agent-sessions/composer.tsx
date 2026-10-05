@@ -5,7 +5,6 @@ import { FormEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "
 import { api, BuilderSession, BuilderSessionCreate, MetadataOptions } from "@/lib/api";
 import { labels, useSession } from "@/shared/auth/session-context";
 import { Icon } from "@/shared/ui/icons";
-import { useCarlaDemo } from "@/features/startup/carla-demo";
 
 import { choicesFor, emptyMapOptions, MapOptions, MapOptionTabs, MapPicker } from "./map-options";
 
@@ -22,26 +21,28 @@ function parseTags(text: string) {
 /** ChatGPT-style composer of a new session: required maps, one description box, per-map options in a collapsible panel. */
 export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: (body: BuilderSessionCreate) => void }) {
   const { session } = useSession();
-  // Maps come from the data source chosen in Start up: the built-in catalog, or the catalog synced from the user's CARLA.
-  const source = useCarlaDemo(session?.active_project?.id).state.source;
   const token = session?.access_token;
+  // Once the project has CARLA data of its own (synced by a Bridge, or imported), only those maps are offered and
+  // the Agent generates against them; the built-in maps are the fallback for projects without any.
+  const [source, setSource] = useState<"PROJECT" | "DEFAULT" | null>(null);
   const [snapshotsByMap, setSnapshotsByMap] = useState<Record<string, number[]> | null>(null);
   const [metadata, setMetadata] = useState<MetadataOptions | null>(null);
   useEffect(() => {
     if (!token) return;
     let active = true;
-    api
-      .listCatalogSnapshots(token, source === "synced" ? "PROJECT" : "DEFAULT")
-      .then((items) => {
-        if (!active) return;
-        const byMap: Record<string, number[]> = {};
-        items.forEach((item) => { byMap[item.map_name] = [...(byMap[item.map_name] ?? []), item.id]; });
-        setSnapshotsByMap(byMap);
-      })
-      .catch(() => { if (active) setSnapshotsByMap({}); });
+    (async () => {
+      const own = await api.listCatalogSnapshots(token, "PROJECT").catch(() => []);
+      const items = own.length ? own : await api.listCatalogSnapshots(token, "DEFAULT").catch(() => []);
+      if (!active) return;
+      // Newest first: keep one snapshot per map (the one generation resolves to), so dropdowns show that data only.
+      const byMap: Record<string, number[]> = {};
+      items.forEach((item) => { if (!byMap[item.map_name]) byMap[item.map_name] = [item.id]; });
+      setSource(own.length ? "PROJECT" : "DEFAULT");
+      setSnapshotsByMap(byMap);
+    })();
     api.getMetadataOptions(token).then((result) => { if (active) setMetadata(result); }).catch(() => { /* lists stay empty: Agent chooses */ });
     return () => { active = false; };
-  }, [token, source]);
+  }, [token]);
   const available = useMemo(() => (snapshotsByMap ? Object.keys(snapshotsByMap).sort() : null), [snapshotsByMap]);
   const choices = useMemo(() => Object.fromEntries((available ?? []).map((map) => [map, choicesFor(metadata, snapshotsByMap?.[map] ?? [])])), [available, metadata, snapshotsByMap]);
 
@@ -111,7 +112,7 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
     onSubmit({
       title: title.trim() || null,
       description: text,
-      catalog_source: source === "synced" ? "PROJECT" : "DEFAULT",
+      catalog_source: source ?? "DEFAULT",
       maps: maps.map((map) => ({ map_code: map, ...optionsOf(map) })),
       tag_names: parseTags(tagsText),
     });
@@ -129,6 +130,13 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
       <h1 className="chat-title">Bạn muốn kiểm thử tình huống nào?</h1>
       <p className="chat-lead">Chọn bản đồ, rồi mô tả tình huống bằng tiếng Việt tự nhiên. Agent dựng kịch bản OpenSCENARIO trên đúng bản đồ đã chọn và lưu mỗi kịch bản thành bản nháp v1 để duyệt.</p>
 
+      {source && (
+        <div className="field-help catalog-source-note">
+          {source === "PROJECT"
+            ? <>Dùng <strong>dữ liệu CARLA của Project</strong> (đồng bộ từ Bridge): bản đồ, phương tiện và thời tiết lấy từ CARLA của máy người dùng.</>
+            : <>Đang dùng <strong>bộ map mặc định</strong>. Kết nối Bridge và bấm “Đồng bộ dữ liệu CARLA” ở Start up để dùng map từ CARLA của bạn.</>}
+        </div>
+      )}
       <MapPicker available={available} selected={maps} busy={busy} onToggle={toggleMap} />
 
       <div className={`chat-composer ${busy ? "busy" : ""}`}>

@@ -2,7 +2,7 @@
 
 Phần mềm cài trên **máy có CARLA** (Ubuntu hoặc Windows) để nối máy đó với một hoặc nhiều Project trên Scenario Forge.
 
-Phiên bản hiện tại chỉ làm: **ghép nối bằng OTP 6 số**, **giữ kết nối lâu dài qua WebSocket** và **kiểm tra cổng CARLA (2000)**. Chưa điều khiển CARLA.
+Bridge là ống thông giữa Scenario Forge (production) và CARLA trên máy người dùng. Hiện làm được: **ghép nối bằng OTP 6 số**, **giữ kết nối lâu dài qua WebSocket**, **kiểm tra cổng CARLA (2000)** và **đồng bộ dữ liệu mọi map của CARLA** lên Project để Test Case Builder và Agent dùng. Chưa chạy kịch bản trên CARLA.
 
 ## Luồng ghép nối
 
@@ -49,6 +49,30 @@ pipx install ./bridge              # hoặc: python -m pip install ./bridge
 
 Ubuntu không có giao diện (server) thường không có Secret Service, nên device token được lưu vào file `~/.config/scenario-forge-bridge/device-token` (quyền 600). Windows lưu token trong Credential Manager.
 
+## Đồng bộ dữ liệu CARLA
+
+Cần gói Python `carla` **đúng phiên bản với CARLA server** (cài vào cùng môi trường với Bridge):
+
+```bash
+pipx inject scenario-forge-bridge carla==0.9.16    # đổi theo phiên bản CARLA của bạn
+```
+
+Trên trang Start up bấm **Đồng bộ dữ liệu CARLA** ở Bridge đang Online (hoặc gõ `scenario-forge-bridge sync`). Bridge:
+
+1. đọc phiên bản CARLA, danh sách map, blueprint phương tiện / người đi bộ và preset thời tiết;
+2. lần lượt **mở từng map** trong CARLA, đọc spawn point, waypoint làn đường (mỗi 2 m) và hash OpenDRIVE;
+3. gửi mỗi map thành một catalog `scenario-forge.catalog.v1` (snapshot nguồn `WORKER`) cho Project;
+4. mở lại map đang mở trước đó.
+
+Trong lúc đồng bộ, CARLA chuyển map liên tục: đừng chạy mô phỏng khác cùng lúc. Map lớn (Town12/13/15) có thể mất vài phút.
+Khi Project đã có dữ liệu đồng bộ, Test Case Builder chỉ hiện các map đó (không hiện map mặc định), và Agent sinh kịch bản trên đúng dữ liệu này.
+
+```
+Web "Đồng bộ dữ liệu CARLA" ─▶ POST /projects/{id}/bridges/{conn}/sync ─▶ WS catalog.sync.request ─▶ Bridge
+Bridge ─(mỗi map)─▶ POST /bridge/catalog (device token) ─▶ snapshot WORKER ─▶ WS catalog.synced ─▶ Web
+Bridge ─▶ WS catalog.sync.progress / catalog.sync.done ─▶ Backend ─▶ Web (thanh tiến độ)
+```
+
 ## Lệnh
 
 ```bash
@@ -57,6 +81,8 @@ scenario-forge-bridge pair 482913 --no-run                                     #
 scenario-forge-bridge run                 # giữ Bridge trực tuyến, tự kết nối lại khi mất mạng
 scenario-forge-bridge status              # máy chủ, Bridge, các Project đã ghép, trạng thái CARLA
 scenario-forge-bridge check-carla         # mã thoát 0 = CARLA đang chạy ở 127.0.0.1:2000, 2 = chưa
+scenario-forge-bridge sync                # đọc mọi map của CARLA và gửi lên mọi Project đã ghép
+scenario-forge-bridge sync --maps Town03,Town10HD_Opt --connection CONN-XXXX
 scenario-forge-bridge unpair CONN-XXXX    # gỡ khỏi một Project
 scenario-forge-bridge unpair --all        # gỡ tất cả và xóa device token
 scenario-forge-bridge config --server URL --carla-host 127.0.0.1 --carla-port 2000
@@ -83,4 +109,5 @@ pytest && ruff check .
 
 - Backend giữ WebSocket trong bộ nhớ của **một** tiến trình. Chạy nhiều instance backend cần pub/sub chung (RabbitMQ fan-out hoặc Redis) sau `app/modules/bridge/hub.py`.
 - Giới hạn nhập sai mã (10 lần / 10 phút theo IP) cũng nằm trong bộ nhớ. Sau reverse proxy cần bật proxy headers để lấy đúng IP người dùng.
-- Kiểm tra CARLA mới chỉ là TCP connect tới cổng RPC, chưa gọi `carla.Client`.
+- `check-carla` và heartbeat chỉ thử TCP tới cổng RPC; riêng `sync` mới dùng `carla.Client`.
+- Nếu CARLA đang ở synchronous mode mà không có client nào tick, `load_world` có thể treo: tắt chương trình đang điều khiển CARLA trước khi đồng bộ.

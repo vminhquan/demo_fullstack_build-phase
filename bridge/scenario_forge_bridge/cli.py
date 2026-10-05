@@ -8,6 +8,7 @@ import typer
 
 from scenario_forge_bridge import __version__, api, credentials, machine
 from scenario_forge_bridge import config as config_store
+from scenario_forge_bridge.carla_catalog import CarlaUnavailable, collect
 from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.channel import ChannelRejected
 from scenario_forge_bridge.channel import run as run_channel
@@ -154,6 +155,48 @@ def check_carla(
         ok(f"CARLA đang chạy ở {probe.host}:{probe.port}.")
         return
     fail(f"Không thấy CARLA ở {probe.host}:{probe.port}: {probe.error}. Hãy mở CarlaUE4 (Windows) hoặc CarlaUE4.sh (Ubuntu).", code=2)
+
+
+@app.command()
+def sync(
+    maps: str = typer.Option(None, "--maps", help="Chỉ đồng bộ các map này, cách nhau dấu phẩy (mặc định: tất cả)."),
+    connection_uid: str = typer.Option(None, "--connection", "-c", help="Chỉ gửi cho Project có mã kết nối này (mặc định: mọi Project đã ghép)."),
+) -> None:
+    """Đọc dữ liệu mọi map của CARLA (spawn point, làn đường, phương tiện, thời tiết) rồi gửi lên Project.
+
+    Thường không cần gõ lệnh này: bấm "Đồng bộ dữ liệu CARLA" trên trang Start up khi Bridge đang chạy.
+    """
+    cfg = config_store.load()
+    token = credentials.load_token()
+    if not token:
+        fail("Máy này chưa được ghép. Chạy `scenario-forge-bridge pair <mã 6 số>` trước.")
+    targets = [item for item in cfg.connections if not connection_uid or item.connection_uid == connection_uid]
+    if not targets:
+        fail("Không có Project nào để gửi dữ liệu (xem `status`).")
+    wanted = [item.strip() for item in maps.split(",") if item.strip()] if maps else None
+    typer.secho("Lưu ý: Bridge sẽ lần lượt mở từng map trong CARLA rồi mở lại map hiện tại khi xong.", fg=typer.colors.YELLOW)
+    synced = failed = 0
+    try:
+        for result in collect(cfg.carla_host, cfg.carla_port, maps=wanted, on_loading=lambda i, n, name: log(f"Đang đọc map {i}/{n}: {name}")):
+            if result.error:
+                failed += 1
+                typer.secho(f"  ✗ {result.map_name}: {result.error}", fg=typer.colors.RED)
+                continue
+            for target in targets:
+                try:
+                    stored = api.upload_catalog(cfg.server, token, target.connection_uid, result.catalog)
+                except api.BridgeApiError as exc:
+                    failed += 1
+                    typer.secho(f"  ✗ {result.map_name} → {target.project_name}: {exc}", fg=typer.colors.RED)
+                    continue
+                synced += 1
+                state = "mới" if stored.get("created") else "không đổi"
+                log(f"  ✓ {result.map_name} → {target.project_name} (snapshot #{stored.get('snapshot_id')}, {state})")
+    except CarlaUnavailable as exc:
+        fail(str(exc))
+    if failed:
+        fail(f"Xong với {failed} lỗi, {synced} map đã gửi.")
+    ok(f"Đã đồng bộ {synced} map.")
 
 
 @app.command()
