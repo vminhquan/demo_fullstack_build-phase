@@ -161,6 +161,8 @@ def check_carla(
 def sync(
     maps: str = typer.Option(None, "--maps", help="Chỉ đồng bộ các map này, cách nhau dấu phẩy (mặc định: tất cả)."),
     connection_uid: str = typer.Option(None, "--connection", "-c", help="Chỉ gửi cho Project có mã kết nối này (mặc định: mọi Project đã ghép)."),
+    load_opt: bool = typer.Option(False, "--load-opt", help="Mở riêng cả bản _Opt (mặc định dùng chung dữ liệu đường với bản thường)."),
+    load_timeout: int = typer.Option(300, "--load-timeout", help="Số giây tối đa chờ CARLA mở một map."),
 ) -> None:
     """Đọc dữ liệu mọi map của CARLA (spawn point, làn đường, phương tiện, thời tiết) rồi gửi lên Project.
 
@@ -177,7 +179,8 @@ def sync(
     typer.secho("Lưu ý: Bridge sẽ lần lượt mở từng map trong CARLA rồi mở lại map hiện tại khi xong.", fg=typer.colors.YELLOW)
     synced = failed = 0
     try:
-        for result in collect(cfg.carla_host, cfg.carla_port, maps=wanted, on_loading=lambda i, n, name: log(f"Đang đọc map {i}/{n}: {name}")):
+        for result in collect(cfg.carla_host, cfg.carla_port, maps=wanted, load_opt=load_opt, load_timeout=load_timeout,
+                              on_loading=lambda i, n, name: log(f"Đang mở map {i}/{n}: {name} (map lớn có thể mất vài phút)")):
             if result.error:
                 failed += 1
                 typer.secho(f"  ✗ {result.map_name}: {result.error}", fg=typer.colors.RED)
@@ -193,7 +196,7 @@ def sync(
                 state = "mới" if stored.get("created") else "không đổi"
                 log(f"  ✓ {result.map_name} → {target.project_name} (snapshot #{stored.get('snapshot_id')}, {state})")
     except CarlaUnavailable as exc:
-        fail(str(exc))
+        fail(f"{exc}\nĐã gửi {synced} map trước khi dừng.")
     if failed:
         fail(f"Xong với {failed} lỗi, {synced} map đã gửi.")
     ok(f"Đã đồng bộ {synced} map.")

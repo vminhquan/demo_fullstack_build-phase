@@ -35,7 +35,7 @@ class BP:
     def has_attribute(s, k): return k in s._a
     def get_attribute(s, k): return Attr(s._a[k])
 class World:
-    def __init__(s, name): s._map = Map(name, {"Town01": 120, "Town03": 300, "Town10HD_Opt": 200}[name])
+    def __init__(s, name): s._map = Map(name, {"Town01": 120, "Town01_Opt": 120, "Town03": 300, "Town10HD_Opt": 200, "Town02": 50}[name])
     def get_map(s): return s._map
     def get_blueprint_library(s):
         return [BP("vehicle.tesla.model3", {"base_type": "car", "number_of_wheels": "4"}), BP("vehicle.yamaha.yzf", {"number_of_wheels": "2"}),
@@ -44,11 +44,22 @@ class WeatherParameters:
     pass
 WeatherParameters.ClearNoon = WeatherParameters(); WeatherParameters.WetNight = WeatherParameters()
 LOADS = []
+MAPS = ["/Game/Carla/Maps/AnnotationColorLandscape", "/Game/Carla/Maps/Town01", "/Game/Carla/Maps/Town01_Opt",
+        "/Game/Carla/Maps/Town03", "/Game/Carla/Maps/Town10HD_Opt"]
+DEAD = {"value": False}
 class Client:
     def __init__(s, host, port): s._world = World("Town10HD_Opt")
     def set_timeout(s, t): pass
-    def get_server_version(s): return "0.9.16"
+    def get_server_version(s):
+        if DEAD["value"]: raise RuntimeError("time-out of 10000ms while waiting for the simulator")
+        return "0.9.16"
     def get_world(s): return s._world
-    def get_available_maps(s): return ["/Game/Carla/Maps/Town01", "/Game/Carla/Maps/Town03", "/Game/Carla/Maps/Town10HD_Opt"]
+    def get_available_maps(s): return list(MAPS)
     def load_world(s, name):
-        time.sleep(0.3); LOADS.append(name); s._world = World(name); return s._world
+        LOADS.append(name)
+        if name.startswith("Annotation"): raise RuntimeError("failed to generate map")
+        if name == "Town02":
+            DEAD["value"] = True
+            raise RuntimeError("time-out of 300000ms while waiting for the simulator")
+        if DEAD["value"]: raise RuntimeError("time-out while waiting for the simulator")
+        time.sleep(0.05); s._world = World(name); return s._world
