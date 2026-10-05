@@ -187,7 +187,10 @@ def sync(
                 continue
             for target in targets:
                 try:
-                    stored = api.upload_catalog(cfg.server, token, target.connection_uid, result.catalog)
+                    stored = api.upload_catalog(
+                        cfg.server, token, target.connection_uid, result.catalog,
+                        on_retry=lambda n, wait, why, name=result.map_name: log(f"  ↻ Gửi lại {name} (lần {n}) sau {wait} giây: {why}"),
+                    )
                 except api.BridgeApiError as exc:
                     failed += 1
                     typer.secho(f"  ✗ {result.map_name} → {target.project_name}: {exc}", fg=typer.colors.RED)

@@ -76,7 +76,10 @@ async def _sync_catalog(ws: ClientConnection, cfg: BridgeConfig, token: str, mes
                 await send("catalog.sync.progress", index=result.index, total=result.total, map_name=result.map_name, status="failed", error=result.error)
                 continue
             try:
-                stored = await asyncio.to_thread(api.upload_catalog, cfg.server, token, connection_uid, result.catalog, request_id)
+                stored = await asyncio.to_thread(
+                    api.upload_catalog, cfg.server, token, connection_uid, result.catalog, request_id,
+                    on_retry=lambda n, wait, why, name=result.map_name: log(f"  ↻ Gửi lại {name} (lần {n}) sau {wait} giây: {why}"),
+                )
             except api.BridgeApiError as exc:
                 failed.append({"map_name": result.map_name, "error": str(exc)})
                 log(f"  ✗ {result.map_name}: {exc}")

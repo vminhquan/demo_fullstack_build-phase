@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+import zlib
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Header, Request, WebSocket, WebSocketDisconnect, status
@@ -267,6 +268,18 @@ async def bridge_unpair(
     await hub.publish_project(connection.project_id, {"type": "bridge.unpaired", "connection_uid": connection.uid})
 
 
+def gunzip_limited(data: bytes, limit: int) -> bytes:
+    """Bridges gzip catalogs (lane waypoints compress ~13x). Bounded so a tiny bomb cannot expand past `limit`."""
+    decompressor = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    try:
+        out = decompressor.decompress(data, limit + 1)
+    except zlib.error as exc:
+        raise ValidationFailed("Catalog upload is not valid gzip") from exc
+    if len(out) > limit or decompressor.unconsumed_tail:
+        raise ValidationFailed(f"Catalog exceeds {limit // (1024 * 1024)} MB")
+    return out
+
+
 @public_router.post("/bridge/catalog", response_model=BridgeCatalogStored)
 async def bridge_upload_catalog(
     request: Request, authorization: str | None = Header(default=None), session: AsyncSession = Depends(get_session)
@@ -277,6 +290,8 @@ async def bridge_upload_catalog(
     raw = await request.body()
     if len(raw) > limit:
         raise ValidationFailed(f"Catalog exceeds {limit // (1024 * 1024)} MB")
+    if (request.headers.get("content-encoding") or "").lower() == "gzip":
+        raw = gunzip_limited(raw, limit)
     try:
         body = BridgeCatalogUpload.model_validate_json(raw)
     except ValueError as exc:

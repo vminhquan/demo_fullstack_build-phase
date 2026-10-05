@@ -46,3 +46,18 @@ def test_bearer_token_parsing() -> None:
     assert bearer_token("bearer  abc ") == "abc"
     assert bearer_token("Basic abc") is None
     assert bearer_token(None) is None
+
+
+def test_gunzip_limited_accepts_catalogs_and_rejects_bombs_and_garbage() -> None:
+    import gzip
+
+    from app.modules.bridge.router import gunzip_limited
+    from app.shared.domain.errors import ValidationFailed
+
+    body = b'{"catalog": {"waypoints": [' + b",".join([b'{"x": 1.0, "y": 2.0}'] * 2000) + b"]}}"
+    assert gunzip_limited(gzip.compress(body), limit=len(body)) == body
+    bomb = gzip.compress(b"0" * 5_000_000)  # ~5 KB on the wire
+    with pytest.raises(ValidationFailed, match="exceeds"):
+        gunzip_limited(bomb, limit=1_000_000)
+    with pytest.raises(ValidationFailed, match="gzip"):
+        gunzip_limited(b"not gzip", limit=1000)
