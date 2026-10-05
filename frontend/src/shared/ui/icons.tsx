@@ -22,6 +22,7 @@ const paths = {
   arrowUp: <path d="M8 13.25V2.75M3.75 7 8 2.75 12.25 7" />,
   sliders: <path d="M2.75 4.5h6.5M12.25 4.5h1M2.75 11.5h1M6.75 11.5h6.5M10.75 3v3M5.25 10v3" />,
   mail: <><rect x="1.75" y="3.25" width="12.5" height="9.5" rx="1.5" /><path d="m2.25 4 5.75 4.5L13.75 4" /></>,
+  phone: <path d="M5.5 2.25H3.75c-.83 0-1.5.67-1.5 1.5 0 5.52 4.48 10 10 10 .83 0 1.5-.67 1.5-1.5V10.5l-2.75-1.25-1.25 1.5a7.5 7.5 0 0 1-3.5-3.5l1.5-1.25L6.75 3.25 5.5 2.25Z" />,
   arrowRight: <path d="M2.75 8h10.5M9 3.75 13.25 8 9 12.25" />,
   settings: <><circle cx="8" cy="8" r="2.25" /><path d="M8 1.75v1.5M8 12.75v1.5M3.58 3.58l1.06 1.06M11.36 11.36l1.06 1.06M1.75 8h1.5M12.75 8h1.5M3.58 12.42l1.06-1.06M11.36 4.64l1.06-1.06" /></>,
   more: <><circle cx="3.5" cy="8" r="1" fill="currentColor" stroke="none" /><circle cx="8" cy="8" r="1" fill="currentColor" stroke="none" /><circle cx="12.5" cy="8" r="1" fill="currentColor" stroke="none" /></>,

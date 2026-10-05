@@ -67,6 +67,9 @@ const projectNavigation: NavItem[] = [
     permission: "member:read",
   },
 ];
+const SUPPORT_EMAIL = "vmquan44@gmail.com";
+const SUPPORT_PHONE = "0397154405";
+
 function isActive(pathname: string, href: string) {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
@@ -233,6 +236,15 @@ export function ProtectedShell({ children }: { children: ReactNode }) {
           {projectNavigation.filter(allowed).map((item) => (
             <NavLink key={item.href} item={item} pathname={sectionPath} projectId={project.id} />
           ))}
+          <div className="nav-support" aria-label="Hỗ trợ">
+            <span className="nav-support-title">Hỗ trợ</span>
+            <a className="nav-support-link" href={`mailto:${SUPPORT_EMAIL}`}>
+              <Icon name="mail" size={14} />{SUPPORT_EMAIL}
+            </a>
+            <a className="nav-support-link" href={`tel:${SUPPORT_PHONE}`}>
+              <Icon name="phone" size={14} />{SUPPORT_PHONE}
+            </a>
+          </div>
         </aside>
       )}
 

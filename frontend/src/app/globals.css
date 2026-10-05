@@ -156,6 +156,15 @@ input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--fg); }
 .project-nav-title strong { overflow: hidden; font-size: 14px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .project-nav-title span { color: var(--faint); font-family: var(--font-mono); font-size: 11px; }
 .project-nav-role { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 6px 12px; }
+/* Support contact, pinned to the bottom of the project navigation. */
+.nav-support { display: grid; gap: 2px; margin-top: auto; padding: 12px 6px 4px; border-top: 1px solid var(--border); }
+.nav-support-title { padding: 0 4px 4px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .4px; text-transform: uppercase; }
+.nav-support-link {
+  display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 4px; border-radius: 6px;
+  color: var(--fg-secondary); font-size: 13px; text-decoration: none; overflow-wrap: anywhere;
+}
+.nav-support-link:hover { background: var(--bg-hover); color: var(--fg); }
+.nav-support-link svg { flex: 0 0 auto; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 6px 8px; font-weight: 600; font-size: 15px; letter-spacing: -.01em; }
 .brand-mark { display: inline-grid; width: 22px; height: 22px; place-items: center; color: var(--fg); }
 .brand-mark svg { width: 20px; height: 20px; }
