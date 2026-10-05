@@ -19,9 +19,17 @@ class Map:
     def to_opendrive(s): return f"<OpenDRIVE name='{s.name}'/>"
     def get_spawn_points(s): return [Transform(i * 10.0, 5.0, 90.0) for i in range(max(1, s._n // 20))]
     def generate_waypoints(s, d): return [Waypoint(i) for i in range(s._n)]
+class ActorAttributeType:
+    Bool, Int, Float, String = "ActorAttributeType.Bool", "ActorAttributeType.Int", "ActorAttributeType.Float", "ActorAttributeType.String"
 class Attr:
-    def __init__(s, v): s.recommended_values, s._v = [], v
-    def as_str(s): return s._v
+    # Real CARLA: typed attribute, as_str() raises "bad attribute cast" unless the attribute is a String.
+    def __init__(s, v):
+        s.recommended_values, s._v = [], v
+        s.type = ActorAttributeType.Int if v.isdigit() else ActorAttributeType.String
+    def as_str(s):
+        if s.type != ActorAttributeType.String: raise RuntimeError("bad attribute cast: cannot convert to String")
+        return s._v
+    def as_int(s): return int(s._v)
 class BP:
     def __init__(s, id, attrs): s.id, s._a = id, attrs
     def has_attribute(s, k): return k in s._a

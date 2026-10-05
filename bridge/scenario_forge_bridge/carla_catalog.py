@@ -7,6 +7,7 @@ map the user had open is restored at the end.
 from __future__ import annotations
 
 import hashlib
+import re
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
@@ -69,20 +70,40 @@ def _waypoint(waypoint: Any) -> dict[str, Any]:
     }
 
 
+_ATTRIBUTE_VALUE = re.compile(r"value=([^()]*)\(")
+
+
 def _attribute(blueprint: Any, key: str) -> str | None:
+    """Attribute value as text. CARLA attributes are typed (number_of_wheels is Int): `as_str()` on a non-string
+    attribute raises "bad attribute cast", so read it with the getter of its own type."""
     if not blueprint.has_attribute(key):
         return None
     value = blueprint.get_attribute(key)
     recommended = list(getattr(value, "recommended_values", []) or [])
-    return str(recommended[0]) if recommended else str(value.as_str() if hasattr(value, "as_str") else value)
+    if recommended:
+        return str(recommended[0])
+    kind = str(getattr(value, "type", "")).rsplit(".", 1)[-1]
+    getters = {"Int": "as_int", "Float": "as_float", "Bool": "as_bool"}
+    for getter in (getters.get(kind), "as_str", "as_int"):
+        if getter and hasattr(value, getter):
+            try:
+                return str(getattr(value, getter)())
+            except RuntimeError:
+                continue
+    # Last resort: "ActorAttribute(id=number_of_wheels, type=int, value=4(const))"
+    match = _ATTRIBUTE_VALUE.search(str(value))
+    return match.group(1) if match else None
 
 
 def blueprints(world: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     vehicles, walkers = [], []
     for blueprint in world.get_blueprint_library():
         if blueprint.id.startswith("vehicle."):
-            wheels = _attribute(blueprint, "number_of_wheels")
-            base_type = (_attribute(blueprint, "base_type") or "").lower() or None
+            try:
+                wheels = _attribute(blueprint, "number_of_wheels")
+                base_type = (_attribute(blueprint, "base_type") or "").lower() or None
+            except Exception:  # noqa: BLE001 - one odd blueprint must not stop the sync; the backend infers the type
+                wheels, base_type = None, None
             vehicles.append({"id": blueprint.id, "base_type": base_type, "number_of_wheels": int(wheels) if wheels and wheels.isdigit() else None})
         elif blueprint.id.startswith("walker.pedestrian"):
             walkers.append({"id": blueprint.id})
