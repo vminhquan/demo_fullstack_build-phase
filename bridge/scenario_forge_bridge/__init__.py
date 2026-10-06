@@ -1,3 +1,3 @@
 """Scenario Forge Bridge: links a machine running CARLA to Scenario Forge projects."""
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"

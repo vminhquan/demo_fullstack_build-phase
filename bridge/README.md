@@ -107,6 +107,8 @@ Mở CARLA **có cửa sổ** (`./CarlaUE4.sh`) rồi `scenario-forge-bridge run
 1. Kiểm tra `sha256(xosc)` = `xosc_sha256` (lệch → `job.failed XOSC_HASH_MISMATCH`) và cổng CARLA (đóng → `CARLA_UNREACHABLE`).
 2. Chuẩn bị XOSC cho ScenarioRunner v0.9.16: thêm `criteria_CollisionTest` (không có criteria thì luôn coi là đạt) và
    thêm StopTrigger theo thời gian cho mỗi Act thiếu nó (ScenarioRunner bỏ qua StopTrigger cấp Storyboard, kịch bản sẽ chạy mãi).
+   Route (`AssignRouteAction`) trong Init được chuyển thành event của Act: route trong Init giữ kịch bản RUNNING tới khi xe
+   tới waypoint cuối, kể cả khi Act đã dừng.
 3. Chạy `<runner_python> scenario_runner.py --openscenario … --json --outputDir …` với `PYTHONPATH=<carla_root>/PythonAPI/carla`
    (gói `agents`); quá `timeout_s` → dừng tiến trình, `job.failed TIMEOUT`.
 4. Đọc báo cáo JSON: `success` → `PASS`/`FAIL`, `CollisionTest.actual` → `collision_count`. Exit code chỉ để tham khảo

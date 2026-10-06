@@ -79,6 +79,18 @@ def test_prepare_xosc_adds_criteria_and_act_end_once() -> None:
     assert twice.count('name="criteria_CollisionTest"') == 1 and twice.count('name="ActEndAfterTime"') == 1
 
 
+def test_prepare_xosc_moves_init_routes_into_the_act() -> None:
+    route = ('<Private entityRef="hero"><PrivateAction><TeleportAction/></PrivateAction><PrivateAction><RoutingAction><AssignRouteAction>'
+             '<Route name="ego_route" closed="false"/></AssignRouteAction></RoutingAction></PrivateAction></Private>')
+    xosc = XOSC.replace("<Storyboard>", f"<Storyboard><Init><Actions>{route}</Actions></Init>")
+    root = ET.fromstring(runner.prepare_xosc(xosc))
+    assert root.find("./Storyboard/Init//RoutingAction") is None
+    assert root.find("./Storyboard/Init/Actions/Private/PrivateAction/TeleportAction") is not None
+    act = root.find("./Storyboard/Story/Act")
+    assert [child.get("name") or child.tag for child in act][:2] == ["MG_hero_route", "MG"]
+    assert act.find("./ManeuverGroup/Maneuver/Event/Action/PrivateAction/RoutingAction/AssignRouteAction") is not None
+
+
 def test_parse_result_reads_the_real_report_shape(tmp_path) -> None:
     (tmp_path / "r.json").write_text(json.dumps({
         "scenario": "ScenarioForge: sc_truck_sudden_brake", "success": False,

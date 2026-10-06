@@ -140,6 +140,9 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
       only an Act StopTrigger ends the scenario (open_scenario.py:492). Every Act without one gets the
       Storyboard's SimulationTimeCondition (else END_AFTER_S), otherwise a maneuver that never completes
       runs until the Bridge timeout.
+    - An Init RoutingAction keeps ScenarioRunner's init behavior RUNNING until the actor reaches the last waypoint,
+      and the scenario cannot end before that (the "behavior" Parallel is SUCCESS_ON_ALL, open_scenario.py:513).
+      Such routes move into the first Act as an event starting at once, so the Act StopTrigger cancels them.
     - criteria_<Name> conditions go into the Storyboard StopTrigger: without any, every run "passes".
     """
     root = ET.fromstring(xosc)
@@ -150,6 +153,14 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     if trigger is None:
         trigger = ET.SubElement(storyboard, "StopTrigger")
     end_after = next((item.get("value") for item in trigger.iter("SimulationTimeCondition") if item.get("value")), None) or str(END_AFTER_S)
+
+    first_act = next(storyboard.iter("Act"), None)
+    init_actions = storyboard.find("Init/Actions")
+    if first_act is not None and init_actions is not None:
+        for private in init_actions.findall("Private"):
+            for action in [item for item in private.findall("PrivateAction") if item.find("RoutingAction") is not None]:
+                private.remove(action)
+                _insert_route_event(first_act, private.get("entityRef", ""), action)
 
     for act in storyboard.iter("Act"):
         if act.find("StopTrigger") is not None:
@@ -168,6 +179,19 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
             ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "ParameterCondition", {"parameterRef": "", "value": "", "rule": "lessThan"})
     ET.indent(root)
     return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
+
+
+def _insert_route_event(act: ET.Element, entity: str, action: ET.Element) -> None:
+    """ManeuverGroup (first in the Act, as OpenSCENARIO orders ManeuverGroup before StartTrigger) running `action` at once."""
+    group = ET.Element("ManeuverGroup", {"maximumExecutionCount": "1", "name": f"MG_{entity}_route"})
+    ET.SubElement(ET.SubElement(group, "Actors", {"selectTriggeringEntities": "false"}), "EntityRef", {"entityRef": entity})
+    event = ET.SubElement(ET.SubElement(group, "Maneuver", {"name": f"Maneuver_{entity}_route"}), "Event",
+                          {"name": f"Event_{entity}_route", "priority": "overwrite"})
+    ET.SubElement(event, "Action", {"name": f"Action_{entity}_route"}).append(action)
+    start = ET.SubElement(ET.SubElement(ET.SubElement(event, "StartTrigger"), "ConditionGroup"), "Condition",
+                          {"name": f"{entity}RouteStart", "delay": "0", "conditionEdge": "rising"})
+    ET.SubElement(ET.SubElement(start, "ByValueCondition"), "SimulationTimeCondition", {"value": "0", "rule": "greaterThan"})
+    act.insert(0, group)
 
 
 def parse_result(workdir: Path, exit_code: int | None, wall_ms: int) -> Outcome:

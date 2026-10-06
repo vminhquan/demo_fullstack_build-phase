@@ -77,12 +77,13 @@ class XoscExporter:
         storyboard = ET.SubElement(root, "Storyboard")
         actions = ET.SubElement(ET.SubElement(storyboard, "Init"), "Actions")
         self._environment(actions, ir.weather, ir.time_of_day_hour)
-        self._init_private(actions, grounded.ego, route=grounded.route)
+        self._init_private(actions, grounded.ego)
         for actor in grounded.actors:
             self._init_private(actions, actor)
 
         story = ET.SubElement(storyboard, "Story", {"name": f"Story_{ir.name}"})
         act_el = ET.SubElement(story, "Act", {"name": f"Act_{ir.name}"})
+        self._route_maneuver(act_el, grounded.ego, grounded.route)
         for idx, actor in enumerate(grounded.actors):
             self._maneuver(act_el, idx, actor, grounded.ego.entity_name)
         act_start = ET.SubElement(ET.SubElement(ET.SubElement(act_el, "StartTrigger"), "ConditionGroup"), "Condition",
@@ -146,20 +147,35 @@ class XoscExporter:
         ET.SubElement(weather_el, "Precipitation", {"precipitationType": "rain" if precipitation > 0 else "dry", "intensity": f"{precipitation / 100.0:.2f}"})
         ET.SubElement(env, "RoadCondition", {"frictionScaleFactor": "0.7" if precipitation > 0 else "1.0"})
 
-    def _init_private(self, actions: ET.Element, entity: PlacedEntity, route: list[dict[str, float]] | None = None) -> None:
+    def _init_private(self, actions: ET.Element, entity: PlacedEntity) -> None:
         private = ET.SubElement(actions, "Private", {"entityRef": entity.entity_name})
         teleport = ET.SubElement(ET.SubElement(private, "PrivateAction"), "TeleportAction")
         self._world_position(ET.SubElement(teleport, "Position"), entity.x, entity.y, entity.z, entity.yaw)
         speed = ET.SubElement(ET.SubElement(ET.SubElement(private, "PrivateAction"), "LongitudinalAction"), "SpeedAction")
         ET.SubElement(speed, "SpeedActionDynamics", {"dynamicsShape": "step", "value": "0.0", "dynamicsDimension": "time"})
         ET.SubElement(ET.SubElement(speed, "SpeedActionTarget"), "AbsoluteTargetSpeed", {"value": f"{entity.initial_speed_ms:.3f}"})
-        if route and len(route) >= 2:
-            # Lane-following route along the grounded ego path, so the ego drives into the conflict.
-            routing = ET.SubElement(ET.SubElement(ET.SubElement(private, "PrivateAction"), "RoutingAction"), "AssignRouteAction")
-            route_el = ET.SubElement(routing, "Route", {"name": "ego_route", "closed": "false"})
-            for point in route:
-                waypoint = ET.SubElement(route_el, "Waypoint", {"routeStrategy": "shortest"})
-                self._world_position(ET.SubElement(waypoint, "Position"), point["x"], point["y"], entity.z, point["yaw"])
+
+    def _route_maneuver(self, act_el: ET.Element, ego: PlacedEntity, route: list[dict[str, float]] | None) -> None:
+        """Lane-following route along the grounded ego path, so the ego drives into the conflict.
+
+        It is an Act event, not an Init action: ScenarioRunner keeps an Init route RUNNING until the ego reaches the
+        last waypoint and the scenario cannot end before that, whereas the Act StopTrigger cancels an Act event.
+        """
+        if not route or len(route) < 2:
+            return
+        group = ET.SubElement(act_el, "ManeuverGroup", {"maximumExecutionCount": "1", "name": f"MG_{ego.entity_name}_route"})
+        ET.SubElement(ET.SubElement(group, "Actors", {"selectTriggeringEntities": "false"}), "EntityRef", {"entityRef": ego.entity_name})
+        event = ET.SubElement(ET.SubElement(group, "Maneuver", {"name": f"Maneuver_{ego.entity_name}_route"}), "Event",
+                              {"name": f"Event_{ego.entity_name}_route", "priority": "overwrite"})
+        private = ET.SubElement(ET.SubElement(event, "Action", {"name": "Action_ego_route"}), "PrivateAction")
+        routing = ET.SubElement(ET.SubElement(private, "RoutingAction"), "AssignRouteAction")
+        route_el = ET.SubElement(routing, "Route", {"name": "ego_route", "closed": "false"})
+        for point in route:
+            waypoint = ET.SubElement(route_el, "Waypoint", {"routeStrategy": "shortest"})
+            self._world_position(ET.SubElement(waypoint, "Position"), point["x"], point["y"], ego.z, point["yaw"])
+        start = ET.SubElement(ET.SubElement(ET.SubElement(event, "StartTrigger"), "ConditionGroup"), "Condition",
+                              {"name": "EgoRouteStart", "delay": "0", "conditionEdge": "rising"})
+        ET.SubElement(ET.SubElement(start, "ByValueCondition"), "SimulationTimeCondition", {"value": "0", "rule": "greaterThan"})
 
     @staticmethod
     def _maneuver(act_el: ET.Element, idx: int, actor: PlacedEntity, ego_name: str) -> None:
