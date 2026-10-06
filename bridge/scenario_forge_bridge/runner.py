@@ -30,6 +30,8 @@ Send = Callable[[dict], Awaitable[None]]
 CRITERIA = ("CollisionTest",)
 # --timeout of scenario_runner.py: how long the CARLA client waits for the simulator (map loads are slow).
 CARLA_CLIENT_TIMEOUT_S = 60
+# Act end time when the XOSC gives none (seconds of simulation).
+END_AFTER_S = 60
 KILL_GRACE_S = 10
 # While a scenario runs, log its elapsed time and last output line this often (shows where it is stuck).
 PROGRESS_EVERY_S = 30
@@ -131,8 +133,15 @@ def child_env(cfg: BridgeConfig) -> dict[str, str]:
 # ---------------------------------------------------------------- XOSC and results
 
 
-def add_criteria(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
-    """Adds criteria_<Name> conditions to the StopTrigger (ScenarioRunner evaluates them on the ego)."""
+def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
+    """Makes a Scenario Forge XOSC end and get judged under ScenarioRunner v0.9.16:
+
+    - ScenarioRunner ignores the Storyboard StopTrigger except its criteria_* conditions (open_scenario.py:581);
+      only an Act StopTrigger ends the scenario (open_scenario.py:492). Every Act without one gets the
+      Storyboard's SimulationTimeCondition (else END_AFTER_S), otherwise a maneuver that never completes
+      runs until the Bridge timeout.
+    - criteria_<Name> conditions go into the Storyboard StopTrigger: without any, every run "passes".
+    """
     root = ET.fromstring(xosc)
     storyboard = root.find("Storyboard")
     if storyboard is None:
@@ -140,15 +149,23 @@ def add_criteria(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     trigger = storyboard.find("StopTrigger")
     if trigger is None:
         trigger = ET.SubElement(storyboard, "StopTrigger")
-    group = trigger.find("ConditionGroup")
-    if group is None:
-        group = ET.SubElement(trigger, "ConditionGroup")
-    existing = {cond.get("name") for cond in group.iter("Condition")}
-    for name in names:
-        if f"criteria_{name}" in existing:
+    end_after = next((item.get("value") for item in trigger.iter("SimulationTimeCondition") if item.get("value")), None) or str(END_AFTER_S)
+
+    for act in storyboard.iter("Act"):
+        if act.find("StopTrigger") is not None:
             continue
-        cond = ET.SubElement(group, "Condition", {"name": f"criteria_{name}", "delay": "0", "conditionEdge": "rising"})
-        ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "ParameterCondition", {"parameterRef": "", "value": "", "rule": "lessThan"})
+        # OpenSCENARIO 1.0: Act = ManeuverGroup+, StartTrigger, StopTrigger? (StopTrigger comes last).
+        cond = ET.SubElement(ET.SubElement(ET.SubElement(act, "StopTrigger"), "ConditionGroup"), "Condition",
+                             {"name": "ActEndAfterTime", "delay": "0", "conditionEdge": "rising"})
+        ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "SimulationTimeCondition", {"value": end_after, "rule": "greaterThan"})
+
+    existing = {cond.get("name") for cond in trigger.iter("Condition")}
+    missing = [name for name in names if f"criteria_{name}" not in existing]
+    if missing:
+        group = ET.SubElement(trigger, "ConditionGroup")
+        for name in missing:
+            cond = ET.SubElement(group, "Condition", {"name": f"criteria_{name}", "delay": "0", "conditionEdge": "rising"})
+            ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "ParameterCondition", {"parameterRef": "", "value": "", "rule": "lessThan"})
     ET.indent(root)
     return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
@@ -224,7 +241,7 @@ def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = Non
         shutil.rmtree(workdir, ignore_errors=True)
     workdir.mkdir(parents=True)
     scenario = workdir / f"{case.get('case_key') or case['test_case_id']}.xosc"
-    scenario.write_text(add_criteria(case["xosc"]), encoding="utf-8")
+    scenario.write_text(prepare_xosc(case["xosc"]), encoding="utf-8")
     env = child_env(cfg)
 
     camera = None

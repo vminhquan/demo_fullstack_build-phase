@@ -88,6 +88,12 @@ class XoscExporter:
         act_start = ET.SubElement(ET.SubElement(ET.SubElement(act_el, "StartTrigger"), "ConditionGroup"), "Condition",
                                   {"name": "ActStart", "delay": "0", "conditionEdge": "rising"})
         ET.SubElement(ET.SubElement(act_start, "ByValueCondition"), "SimulationTimeCondition", {"value": "0", "rule": "greaterThan"})
+        # ScenarioRunner ends a scenario only through an Act StopTrigger; it reads nothing but criteria_* from
+        # the Storyboard StopTrigger, so without this a maneuver that never completes runs forever.
+        act_stop = ET.SubElement(ET.SubElement(ET.SubElement(act_el, "StopTrigger"), "ConditionGroup"), "Condition",
+                                 {"name": "ActEnd", "delay": "0", "conditionEdge": "rising"})
+        ET.SubElement(ET.SubElement(act_stop, "ByValueCondition"), "SimulationTimeCondition",
+                      {"value": f"{STOP_AFTER_SECONDS}", "rule": "greaterThan"})
         stop = ET.SubElement(ET.SubElement(ET.SubElement(storyboard, "StopTrigger"), "ConditionGroup"), "Condition",
                              {"name": "EndSim", "delay": "0", "conditionEdge": "rising"})
         ET.SubElement(ET.SubElement(stop, "ByValueCondition"), "SimulationTimeCondition",

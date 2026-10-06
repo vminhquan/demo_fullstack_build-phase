@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 import textwrap
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -14,7 +15,10 @@ from scenario_forge_bridge.config import BridgeConfig
 
 XOSC = """<?xml version="1.0" encoding="utf-8"?>
 <OpenSCENARIO><FileHeader revMajor="1" revMinor="0"/><RoadNetwork><LogicFile filepath="Town10HD_Opt"/></RoadNetwork>
-<Storyboard><StopTrigger><ConditionGroup>
+<Storyboard><Story name="S"><Act name="A"><ManeuverGroup maximumExecutionCount="1" name="MG"><Actors selectTriggeringEntities="false"/></ManeuverGroup>
+<StartTrigger><ConditionGroup><Condition name="ActStart" delay="0" conditionEdge="rising">
+<ByValueCondition><SimulationTimeCondition value="0" rule="greaterThan"/></ByValueCondition></Condition></ConditionGroup></StartTrigger></Act></Story>
+<StopTrigger><ConditionGroup>
 <Condition name="EndSim" delay="0" conditionEdge="rising">
 <ByValueCondition><SimulationTimeCondition value="20.0" rule="greaterThan"/></ByValueCondition></Condition>
 </ConditionGroup></StopTrigger></Storyboard></OpenSCENARIO>
@@ -64,11 +68,15 @@ def case(**extra) -> dict:
             "xosc_sha256": hashlib.sha256(XOSC.encode()).hexdigest(), "xosc": XOSC, **extra}
 
 
-def test_add_criteria_is_idempotent() -> None:
-    once = runner.add_criteria(XOSC)
+def test_prepare_xosc_adds_criteria_and_act_end_once() -> None:
+    once = runner.prepare_xosc(XOSC)
     assert once.count('name="criteria_CollisionTest"') == 1
     assert 'parameterRef="" value="" rule="lessThan"' in once
-    assert runner.add_criteria(once).count('name="criteria_CollisionTest"') == 1
+    act = ET.fromstring(once).find("./Storyboard/Story/Act")
+    assert [child.tag for child in act] == ["ManeuverGroup", "StartTrigger", "StopTrigger"]
+    assert act.find("./StopTrigger//SimulationTimeCondition").get("value") == "20.0"
+    twice = runner.prepare_xosc(once)
+    assert twice.count('name="criteria_CollisionTest"') == 1 and twice.count('name="ActEndAfterTime"') == 1
 
 
 def test_parse_result_reads_the_real_report_shape(tmp_path) -> None:
