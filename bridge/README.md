@@ -109,8 +109,11 @@ Mở CARLA **có cửa sổ** (`./CarlaUE4.sh`) rồi `scenario-forge-bridge run
    thêm StopTrigger theo thời gian cho mỗi Act thiếu nó (ScenarioRunner bỏ qua StopTrigger cấp Storyboard, kịch bản sẽ chạy mãi).
    Route (`AssignRouteAction`) trong Init được chuyển thành event của Act: route trong Init giữ kịch bản RUNNING tới khi xe
    tới waypoint cuối, kể cả khi Act đã dừng.
+   `RelativeTargetLane value="0"` của LaneChangeAction (ScenarioRunner chia cho 0) được đổi thành ±1 về phía xe được tham chiếu.
 3. Chạy `<runner_python> scenario_runner.py --openscenario … --json --outputDir …` với `PYTHONPATH=<carla_root>/PythonAPI/carla`
    (gói `agents`); quá `timeout_s` → dừng tiến trình, `job.failed TIMEOUT`.
+   ScenarioRunner đã in `No more scenarios .... Exiting` mà 15 giây sau chưa thoát (thường sau một exception) → dừng nó và
+   báo `SCENARIO_RUNNER_ERROR` kèm traceback, không đợi tới `timeout_s`.
 4. Đọc báo cáo JSON: `success` → `PASS`/`FAIL`, `CollisionTest.actual` → `collision_count`. Exit code chỉ để tham khảo
    (ScenarioRunner có thể trả 120 dù chạy xong).
 

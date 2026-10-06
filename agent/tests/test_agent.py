@@ -134,3 +134,21 @@ def test_regulation_question_is_rejected(client, catalog_json):
     )
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "NOT_A_SCENARIO_REQUEST"
+
+
+def test_cut_in_moves_one_lane_toward_the_ego_and_ends_under_scenario_runner(client, catalog_json):
+    # ScenarioRunner v0.9.16 reads RelativeTargetLane as lane changes from the actor's own lane (> 0 = left;
+    # "0" divides by zero), ends a scenario only through an Act StopTrigger, and keeps an Init route running.
+    response = client.post(
+        "/v1/scenarios/generate",
+        json={"prompt": "Xe máy tạt đầu ở ngã tư khi trời mưa", "catalog": catalog_json, "offline_mode": True, "seed": 1},
+        headers={"X-API-Key": "test-key"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["scenario_ir"]["actors"][0]["relative_position"] == "ahead_adjacent_right"
+    root = ET.fromstring(body["xosc"])
+    assert root.find(".//LaneChangeAction/LaneChangeTarget/RelativeTargetLane").get("value") == "1"
+    assert root.find("./Storyboard/Story/Act/StopTrigger//SimulationTimeCondition") is not None
+    assert root.find("./Storyboard/Init//RoutingAction") is None
+    assert root.find("./Storyboard/Story/Act/ManeuverGroup//AssignRouteAction") is not None

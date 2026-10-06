@@ -989,6 +989,7 @@ a.case-key { display: inline-block; color: var(--blue); }
 .bridge-guide-steps { display: grid; gap: 12px; margin: 0; padding-left: 20px; }
 .bridge-guide-steps li { display: grid; gap: 6px; }
 .bridge-guide-daily { display: grid; gap: 8px; }
+.bridge-guide-section { display: grid; gap: 8px; }
 .command-line { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 6px 6px 10px; border-radius: var(--radius); background: var(--bg-hover); }
 .command-line code { flex: 1; min-width: 0; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
 .command-copy { flex: 0 0 auto; height: 26px; padding: 0 10px; font-size: 12px; }

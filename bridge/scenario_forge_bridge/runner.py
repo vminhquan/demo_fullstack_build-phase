@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -35,6 +36,10 @@ END_AFTER_S = 60
 KILL_GRACE_S = 10
 # While a scenario runs, log its elapsed time and last output line this often (shows where it is stuck).
 PROGRESS_EVERY_S = 30
+# ScenarioRunner prints this when it is done; after an exception its watchdog thread can keep the process alive.
+EXIT_MARKER = "No more scenarios .... Exiting"
+EXIT_GRACE_S = 15
+POLL_S = 5
 LOG_TAIL_CHARS = 3000
 
 # Runs in the runner Python while a scenario plays: keeps the CARLA window camera on the ego ("hero"),
@@ -143,6 +148,8 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     - An Init RoutingAction keeps ScenarioRunner's init behavior RUNNING until the actor reaches the last waypoint,
       and the scenario cannot end before that (the "behavior" Parallel is SUCCESS_ON_ALL, open_scenario.py:513).
       Such routes move into the first Act as an event starting at once, so the Act StopTrigger cancels them.
+    - ScenarioRunner reads RelativeTargetLane as lane changes from the actor's own lane (> 0 = left) and ignores
+      entityRef (openscenario_parser.py:1383); "0" divides by zero. A "0" becomes ±1 toward the referenced entity.
     - criteria_<Name> conditions go into the Storyboard StopTrigger: without any, every run "passes".
     """
     root = ET.fromstring(xosc)
@@ -153,6 +160,8 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     if trigger is None:
         trigger = ET.SubElement(storyboard, "StopTrigger")
     end_after = next((item.get("value") for item in trigger.iter("SimulationTimeCondition") if item.get("value")), None) or str(END_AFTER_S)
+
+    _fix_lane_changes(storyboard)
 
     first_act = next(storyboard.iter("Act"), None)
     init_actions = storyboard.find("Init/Actions")
@@ -181,6 +190,33 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
 
 
+def _start_poses(storyboard: ET.Element) -> dict[str, tuple[float, float, float]]:
+    """entity -> (x, y, h) of its Init TeleportAction WorldPosition (OpenSCENARIO frame)."""
+    poses = {}
+    for private in storyboard.findall("Init/Actions/Private"):
+        position = private.find("PrivateAction/TeleportAction/Position/WorldPosition")
+        if position is not None:
+            poses[private.get("entityRef", "")] = tuple(float(position.get(key, 0) or 0) for key in ("x", "y", "h"))
+    return poses
+
+
+def _fix_lane_changes(storyboard: ET.Element) -> None:
+    poses = _start_poses(storyboard)
+    for group in storyboard.iter("ManeuverGroup"):
+        mover = group.find("Actors/EntityRef")
+        for target in group.iter("RelativeTargetLane"):
+            if _number(target.get("value")) != 0:
+                continue
+            actor, reference = poses.get(mover.get("entityRef", "") if mover is not None else ""), poses.get(target.get("entityRef", ""))
+            value = "1"  # left when the side is unknown: any non-zero value runs instead of crashing
+            if actor and reference:
+                # OpenSCENARIO is right-handed: the reference's left is (-sin h, cos h).
+                dx, dy, heading = actor[0] - reference[0], actor[1] - reference[1], reference[2]
+                left = dx * -math.sin(heading) + dy * math.cos(heading)
+                value = "1" if left < 0 else "-1"
+            target.set("value", value)
+
+
 def _insert_route_event(act: ET.Element, entity: str, action: ET.Element) -> None:
     """ManeuverGroup (first in the Act, as OpenSCENARIO orders ManeuverGroup before StartTrigger) running `action` at once."""
     group = ET.Element("ManeuverGroup", {"maximumExecutionCount": "1", "name": f"MG_{entity}_route"})
@@ -199,6 +235,9 @@ def parse_result(workdir: Path, exit_code: int | None, wall_ms: int) -> Outcome:
     {"scenario", "success", "criteria": [{"name", "actor", "optional", "expected", "actual", "success"}, …, {"name": "Duration", …}]}
     """
     reports = sorted(workdir.glob("*.json"), key=lambda path: path.stat().st_mtime)
+    if "Traceback (most recent call last)" in log_tail(workdir):
+        # An exception inside the scenario (e.g. an action ScenarioRunner cannot execute): any report is partial.
+        raise CaseFailed("SCENARIO_RUNNER_ERROR", f"ScenarioRunner gặp lỗi khi chạy kịch bản (exit {exit_code}).\n{log_tail(workdir)}")
     if not reports:
         raise CaseFailed("SCENARIO_RUNNER_ERROR", f"ScenarioRunner không tạo báo cáo (exit {exit_code}).\n{log_tail(workdir)}")
     data = json.loads(reports[-1].read_text(encoding="utf-8"))
@@ -286,17 +325,26 @@ def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = Non
         with open(workdir / "runner.log", "wb") as runner_log:
             process = subprocess.Popen(command, cwd=cfg.runner_root, env=env, stdout=runner_log, stderr=subprocess.STDOUT)
             limit = int(case.get("timeout_s") or 300)
-            exit_code = None
+            exit_code, exited_at, next_progress = None, None, PROGRESS_EVERY_S
             while exit_code is None:
                 elapsed = time.monotonic() - started
                 if elapsed >= limit:
                     _stop(process)
                     raise CaseFailed("TIMEOUT", f"Quá {limit} giây.\n{log_tail(workdir)}")
                 try:
-                    exit_code = process.wait(timeout=min(PROGRESS_EVERY_S, limit - elapsed))
+                    exit_code = process.wait(timeout=min(POLL_S, limit - elapsed))
                 except subprocess.TimeoutExpired:
-                    if log:
-                        log(f"    … {case.get('case_key')} đang chạy {int(time.monotonic() - started)} s · {last_line(workdir)}")
+                    elapsed = time.monotonic() - started
+                    if exited_at is None and EXIT_MARKER in log_tail(workdir):
+                        exited_at = elapsed
+                    if exited_at is not None and elapsed - exited_at >= EXIT_GRACE_S:
+                        # Done (usually after a Python exception) but not exiting: do not hold the queue until timeout.
+                        _stop(process)
+                        exit_code = process.returncode
+                        break
+                    if log and elapsed >= next_progress:
+                        next_progress += PROGRESS_EVERY_S
+                        log(f"    … {case.get('case_key')} đang chạy {int(elapsed)} s · {last_line(workdir)}")
     except OSError as exc:
         raise CaseFailed("SCENARIO_RUNNER_ERROR", f"Không chạy được {cfg.runner_python}: {exc}") from exc
     finally:

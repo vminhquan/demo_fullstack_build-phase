@@ -5,6 +5,7 @@ import hashlib
 import json
 import sys
 import textwrap
+import time
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -43,6 +44,11 @@ FAKE_SCENARIO_RUNNER = textwrap.dedent('''
     report = {"scenario": "ScenarioForge: t", "success": all(c["success"] for c in criteria), "criteria": criteria}
     pathlib.Path(a.outputDir, "ScenarioForge: t.json").write_text(json.dumps(report))
     print("PYTHONPATH=" + os.environ.get("PYTHONPATH", ""))
+    if os.environ.get("FAKE_HANG_AFTER_ERROR"):
+        print("Traceback (most recent call last):")
+        print("ZeroDivisionError: float division by zero")
+        print("No more scenarios .... Exiting", flush=True)
+        time.sleep(120)
     sys.exit(120)  # what a real run returned when stdout could not be flushed: must not decide the verdict
 ''')
 
@@ -183,3 +189,34 @@ def test_reports_are_kept_until_acknowledged() -> None:
         assert executor.unacked == {}
 
     asyncio.run(main())
+
+
+def test_prepare_xosc_turns_lane_change_zero_toward_the_ego() -> None:
+    # Ego heading +x (h=0); in OpenSCENARIO's right-handed frame y < 0 is the ego's right.
+    def scenario(actor_y: float) -> str:
+        init = (f'<Init><Actions><Private entityRef="hero"><PrivateAction><TeleportAction><Position><WorldPosition x="0" y="0" z="0" h="0"/>'
+                f'</Position></TeleportAction></PrivateAction></Private><Private entityRef="adversary_0"><PrivateAction><TeleportAction><Position>'
+                f'<WorldPosition x="20" y="{actor_y}" z="0" h="0"/></Position></TeleportAction></PrivateAction></Private></Actions></Init>')
+        group = ('<ManeuverGroup maximumExecutionCount="1" name="MG_adversary_0"><Actors selectTriggeringEntities="false">'
+                 '<EntityRef entityRef="adversary_0"/></Actors><Maneuver name="M"><Event name="E" priority="overwrite"><Action name="A">'
+                 '<PrivateAction><LateralAction><LaneChangeAction><LaneChangeActionDynamics dynamicsShape="sinusoidal" value="25" '
+                 'dynamicsDimension="distance"/><LaneChangeTarget><RelativeTargetLane entityRef="hero" value="0"/></LaneChangeTarget>'
+                 '</LaneChangeAction></LateralAction></PrivateAction></Action></Event></Maneuver></ManeuverGroup>')
+        return XOSC.replace("<Storyboard>", f"<Storyboard>{init}").replace('<Act name="A">', f'<Act name="A">{group}')
+
+    def value(xosc: str) -> str:
+        return ET.fromstring(runner.prepare_xosc(xosc)).find(".//RelativeTargetLane").get("value")
+
+    assert value(scenario(-3.5)) == "1"   # on the ego's right: change left
+    assert value(scenario(3.5)) == "-1"   # on the ego's left: change right
+
+
+def test_runner_error_that_does_not_exit_is_reported_quickly(cfg, tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_HANG_AFTER_ERROR", "1")
+    monkeypatch.setattr(runner, "EXIT_GRACE_S", 1)
+    monkeypatch.setattr(runner, "POLL_S", 0.5)
+    started = time.monotonic()
+    with pytest.raises(runner.CaseFailed) as exc:
+        runner.run_case(cfg, case(timeout_s=60), tmp_path / "work")
+    assert exc.value.code == "SCENARIO_RUNNER_ERROR" and "ZeroDivisionError" in exc.value.message
+    assert time.monotonic() - started < 15

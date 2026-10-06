@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.scenario.grounding import GroundedScenario, PlacedEntity
+from app.scenario.grounding import GroundedScenario, PlacedEntity, right_of
 from app.scenario.schemas import ActorType, WeatherPreset
 
 XSD_PATH = Path(__file__).resolve().parents[2] / "knowledge" / "schemas" / "OpenSCENARIO_1_0.xsd"
@@ -36,6 +36,18 @@ VEHICLE_CATEGORY: dict[str, str] = {
 }
 
 STOP_AFTER_SECONDS = 20.0
+
+
+def toward_ego_lane(actor: PlacedEntity, ego: PlacedEntity) -> str:
+    """RelativeTargetLane value that moves `actor` one lane toward the ego: "1" (left) when it is on the ego's right.
+
+    ScenarioRunner ignores entityRef and reads the value as lane changes from the actor's own lane (> 0 = left,
+    openscenario_parser.py:1383); "0" ("the ego's lane" in OpenSCENARIO) makes it divide by zero.
+    Positions are CARLA world coordinates, before the y flip of the XOSC.
+    """
+    rx, ry = right_of(ego.yaw)
+    lateral = (actor.x - ego.x) * rx + (actor.y - ego.y) * ry
+    return "1" if lateral > 0 else "-1"
 
 
 class XoscExporter:
@@ -85,7 +97,7 @@ class XoscExporter:
         act_el = ET.SubElement(story, "Act", {"name": f"Act_{ir.name}"})
         self._route_maneuver(act_el, grounded.ego, grounded.route)
         for idx, actor in enumerate(grounded.actors):
-            self._maneuver(act_el, idx, actor, grounded.ego.entity_name)
+            self._maneuver(act_el, idx, actor, grounded.ego)
         act_start = ET.SubElement(ET.SubElement(ET.SubElement(act_el, "StartTrigger"), "ConditionGroup"), "Condition",
                                   {"name": "ActStart", "delay": "0", "conditionEdge": "rising"})
         ET.SubElement(ET.SubElement(act_start, "ByValueCondition"), "SimulationTimeCondition", {"value": "0", "rule": "greaterThan"})
@@ -178,7 +190,8 @@ class XoscExporter:
         ET.SubElement(ET.SubElement(start, "ByValueCondition"), "SimulationTimeCondition", {"value": "0", "rule": "greaterThan"})
 
     @staticmethod
-    def _maneuver(act_el: ET.Element, idx: int, actor: PlacedEntity, ego_name: str) -> None:
+    def _maneuver(act_el: ET.Element, idx: int, actor: PlacedEntity, ego: PlacedEntity) -> None:
+        ego_name = ego.entity_name
         group = ET.SubElement(act_el, "ManeuverGroup", {"maximumExecutionCount": "1", "name": f"MG_{actor.entity_name}"})
         ET.SubElement(ET.SubElement(group, "Actors", {"selectTriggeringEntities": "false"}), "EntityRef", {"entityRef": actor.entity_name})
         maneuver = ET.SubElement(group, "Maneuver", {"name": f"Maneuver_{actor.entity_name}"})
@@ -189,7 +202,7 @@ class XoscExporter:
         if trigger in ("cut_in", "lane_departure"):
             change = ET.SubElement(ET.SubElement(private, "LateralAction"), "LaneChangeAction")
             ET.SubElement(change, "LaneChangeActionDynamics", {"dynamicsShape": "sinusoidal", "value": "25.0", "dynamicsDimension": "distance"})
-            ET.SubElement(ET.SubElement(change, "LaneChangeTarget"), "RelativeTargetLane", {"entityRef": ego_name, "value": "0"})
+            ET.SubElement(ET.SubElement(change, "LaneChangeTarget"), "RelativeTargetLane", {"entityRef": ego_name, "value": toward_ego_lane(actor, ego)})
         elif trigger in ("sudden_brake", "door_opening"):
             speed = ET.SubElement(ET.SubElement(private, "LongitudinalAction"), "SpeedAction")
             ET.SubElement(speed, "SpeedActionDynamics", {"dynamicsShape": "linear", "value": "7.5", "dynamicsDimension": "rate"})

@@ -239,56 +239,144 @@ function BridgeOtp({ pending, live, onRegenerate, onClose }: {
 
 // pipx installs the CLI straight from the repository's bridge/ folder.
 const BRIDGE_SOURCE = "git+https://github.com/vminhquan/demo_fullstack_build-phase.git#subdirectory=bridge";
+// CARLA server version the Simulator Runner is set up for (ScenarioRunner tag and `carla` package follow it).
+const CARLA_VERSION = "0.9.16";
 
 type GuideOs = "ubuntu" | "windows";
 type GuideStep = { title: string; note?: string; commands: string[] };
+type GuideSection = { title: string; note?: string; steps: GuideStep[] };
 
-function guideSteps(os: GuideOs, server: string): GuideStep[] {
-  const install: GuideStep = os === "ubuntu"
-    ? { title: "Cài Python, Git và pipx (một lần)", commands: ["sudo apt update && sudo apt install -y python3 python3-venv pipx git", "pipx ensurepath && source ~/.bashrc"] }
-    : {
-      title: "Cài Python, Git và pipx (một lần)",
-      note: "Sau lệnh cuối, đóng PowerShell và mở lại.",
-      commands: ["winget install Python.Python.3.11", "winget install Git.Git", "py -m pip install --user pipx", "py -m pipx ensurepath"],
-    };
+// Paths used in every command of one OS; the user edits CARLA's if it is installed elsewhere.
+const PATHS: Record<GuideOs, { carla: string; runner: string; python: string; patched: string; runs: string }> = {
+  ubuntu: {
+    carla: `~/CARLA_${CARLA_VERSION}`,
+    runner: "~/scenario_runner",
+    python: "~/sr-venv/bin/python",
+    patched: "~/scenario_runner/srunner/scenariomanager/scenarioatomics/atomic_behaviors.py",
+    runs: "~/.config/scenario-forge-bridge/runs",
+  },
+  windows: {
+    carla: String.raw`C:\CARLA_${CARLA_VERSION}`,
+    runner: String.raw`C:\scenario_runner`,
+    python: String.raw`C:\sr-venv\Scripts\python.exe`,
+    patched: String.raw`C:\scenario_runner\srunner\scenariomanager\scenarioatomics\atomic_behaviors.py`,
+    runs: String.raw`$env:LOCALAPPDATA\ScenarioForge\scenario-forge-bridge\runs`,
+  },
+};
+
+// Two known bugs of ScenarioRunner v0.9.16 when the ego has a route (AssignRouteAction): crash on `len(None)`,
+// and a controller that resets itself. Same edits as bridge/README.md.
+function patchCommands(os: GuideOs): string[] {
+  const file = PATHS[os].patched;
+  if (os === "ubuntu") {
+    return [
+      String.raw`sed -i 's/        if len(self._waypoints) != len(self._times):/        if self._times is not None and len(self._waypoints) != len(self._times):/' ` + file,
+      String.raw`sed -i 's/^                actor_dict\[self._actor.id\].reset()$/                if actor_dict[self._actor.id] is not self._actor_control:\n                    actor_dict[self._actor.id].reset()/' ` + file,
+      `grep -c -e "self._times is not None and len" -e "is not self._actor_control" ${file}`,
+    ];
+  }
   return [
-    install,
-    { title: "Cài Scenario Forge Bridge", commands: [`pipx install "${BRIDGE_SOURCE}"`, "scenario-forge-bridge --version"] },
-    { title: "Trỏ Bridge tới máy chủ này (một lần)", commands: [`scenario-forge-bridge config --server ${server}`] },
+    `$f = "${file}"`,
+    String.raw`(Get-Content $f) -replace '^        if len\(self\._waypoints\) != len\(self\._times\):$', '        if self._times is not None and len(self._waypoints) != len(self._times):' | Set-Content $f`,
+    String.raw`(Get-Content $f) -replace '^                actor_dict\[self\._actor\.id\]\.reset\(\)$', "                if actor_dict[self._actor.id] is not self._actor_control:` + "`n" + String.raw`                    actor_dict[self._actor.id].reset()" | Set-Content $f`,
+    String.raw`(Select-String -Path $f -Pattern "self._times is not None and len", "is not self._actor_control").Count`,
+  ];
+}
+
+function guideSections(os: GuideOs, server: string): GuideSection[] {
+  const paths = PATHS[os];
+  const ubuntu = os === "ubuntu";
+  return [
     {
-      title: "Kiểm tra CARLA (không bắt buộc)",
-      note: "Máy chưa có CARLA vẫn ghép nối được; Bridge chỉ cảnh báo và tự báo khi CARLA được mở sau.",
-      commands: ["scenario-forge-bridge check-carla"],
+      title: "1. Kết nối máy này với Project",
+      steps: [
+        ubuntu
+          ? { title: "Cài Python, Git và pipx (một lần)", commands: ["sudo apt update && sudo apt install -y python3 python3-venv pipx git", "pipx ensurepath && source ~/.bashrc"] }
+          : {
+            title: "Cài Python, Git và pipx (một lần)",
+            note: "Sau lệnh cuối, đóng PowerShell và mở lại.",
+            commands: ["winget install Python.Python.3.11", "winget install Git.Git", "py -m pip install --user pipx", "py -m pipx ensurepath"],
+          },
+        { title: "Cài Scenario Forge Bridge", commands: [`pipx install --force "${BRIDGE_SOURCE}"`, "scenario-forge-bridge --version"] },
+        { title: "Trỏ Bridge tới máy chủ này (một lần)", commands: [`scenario-forge-bridge config --server ${server}`] },
+        {
+          title: "Ghép nối",
+          note: "Bấm “Thêm kết nối mới” ở trên để lấy mã 6 số, rồi chạy lệnh dưới trên máy đó. --no-run: ghép xong thì dừng, cài tiếp phần 2 rồi mới chạy Bridge.",
+          commands: ["scenario-forge-bridge pair <mã 6 số> --no-run"],
+        },
+      ],
     },
     {
-      title: "Cài gói Python carla để đồng bộ dữ liệu map",
-      note: "Phiên bản phải trùng với CARLA server (xem trong cửa sổ CARLA hoặc `status`). Chỉ cần khi bấm “Đồng bộ dữ liệu CARLA”; ghép nối không cần gói này.",
-      commands: ["pipx inject scenario-forge-bridge carla==0.9.16"],
-    },
-    {
-      title: "Ghép nối",
-      note: "Bấm “Thêm kết nối mới” ở trên để lấy mã 6 số, rồi chạy lệnh dưới trên máy đó. Để cửa sổ mở thì Bridge giữ trạng thái Online.",
-      commands: ["scenario-forge-bridge pair <mã 6 số>"],
+      title: "2. Chạy test case trên CARLA (Simulator Runner)",
+      note: `Bridge chạy từng test case bằng ScenarioRunner ${CARLA_VERSION} trong một Python riêng. Đổi ${paths.carla} nếu CARLA cài ở chỗ khác.`,
+      steps: [
+        {
+          title: `Mở CARLA ${CARLA_VERSION} có cửa sổ`,
+          note: "Giữ cửa sổ CARLA mở: khi chạy test, camera tự bám xe ego để xem va chạm. Không dùng -RenderOffScreen.",
+          commands: [ubuntu ? `cd ${paths.carla} && ./CarlaUE4.sh -quality-level=Low` : `${paths.carla}\\CarlaUE4.exe -quality-level=Low`, "scenario-forge-bridge check-carla"],
+        },
+        {
+          title: "Tạo Python 3.10 riêng cho ScenarioRunner (một lần)",
+          note: "ScenarioRunner cần Python 3.10 hoặc 3.11 (numpy 1.24.4 không có bản cho 3.12). uv tự tải Python, không cần quyền quản trị.",
+          commands: ubuntu
+            ? ["curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env", `uv venv --python 3.10 ~/sr-venv`]
+            : [`powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`, String.raw`uv venv --python 3.10 C:\sr-venv`],
+        },
+        {
+          title: `Cài ScenarioRunner v${CARLA_VERSION} (một lần)`,
+          commands: [
+            `git clone -b v${CARLA_VERSION} --depth 1 https://github.com/carla-simulator/scenario_runner.git ${paths.runner}`,
+            `uv pip install --python ${paths.python} carla==${CARLA_VERSION} -r ${paths.runner}${ubuntu ? "/" : "\\"}requirements.txt`,
+          ],
+        },
+        {
+          title: "Vá 2 lỗi của ScenarioRunner (một lần)",
+          note: "Lỗi có sẵn của ScenarioRunner khi xe ego có route: thiếu bản vá thì kịch bản dừng ngay (NoneType has no len / set_speed). Lệnh cuối phải in ra 2.",
+          commands: patchCommands(os),
+        },
+        {
+          title: "Cho Bridge biết dùng Python và ScenarioRunner nào (một lần)",
+          note: "Lệnh status phải có dòng “Runner : sẵn sàng”.",
+          commands: [`scenario-forge-bridge config --runner-python ${paths.python} --runner-root ${paths.runner} --carla-root ${paths.carla} --camera follow`, "scenario-forge-bridge status"],
+        },
+        {
+          title: "Cài gói carla cho Bridge để đồng bộ dữ liệu map",
+          note: "Chỉ cần cho nút “Đồng bộ dữ liệu CARLA”. Cài lại sau mỗi lần cập nhật Bridge.",
+          commands: [`pipx inject scenario-forge-bridge carla==${CARLA_VERSION}`],
+        },
+        {
+          title: "Chạy Bridge",
+          note: "Để cửa sổ mở thì Bridge Online và nhận test case từ Simulator Runner. Không nhấn Ctrl+C khi đang có test case chạy: ScenarioRunner dừng theo và test case chạy lại từ đầu.",
+          commands: ["scenario-forge-bridge run"],
+        },
+      ],
     },
   ];
 }
 
-const DAILY_COMMANDS: { command: string; hint: string }[] = [
-  { command: "scenario-forge-bridge run", hint: "Bật lại Bridge (Online) sau khi tắt máy hoặc đóng cửa sổ" },
-  { command: "scenario-forge-bridge status", hint: "Xem các Project đã ghép và trạng thái CARLA" },
-  { command: "scenario-forge-bridge sync", hint: "Đồng bộ dữ liệu mọi map của CARLA (giống nút “Đồng bộ dữ liệu CARLA”)" },
-  { command: "pipx upgrade scenario-forge-bridge", hint: "Cập nhật lên bản mới" },
-];
+function dailyCommands(os: GuideOs): { command: string; hint: string }[] {
+  const runs = PATHS[os].runs;
+  return [
+    { command: "scenario-forge-bridge run", hint: "Bật lại Bridge (Online) sau khi tắt máy hoặc đóng cửa sổ" },
+    { command: "scenario-forge-bridge status", hint: "Project đã ghép, trạng thái CARLA và Simulator Runner" },
+    { command: "scenario-forge-bridge sync", hint: "Đồng bộ dữ liệu mọi map của CARLA (giống nút “Đồng bộ dữ liệu CARLA”)" },
+    { command: `pipx install --force "${BRIDGE_SOURCE}"`, hint: `Cập nhật Bridge lên bản mới (sau đó chạy lại pipx inject scenario-forge-bridge carla==${CARLA_VERSION})` },
+    {
+      command: os === "ubuntu" ? `ls -lt ${runs}/*/` : `Get-ChildItem "${runs}" -Recurse -Filter runner.log | Sort-Object LastWriteTime -Descending | Select-Object -First 5 FullName`,
+      hint: "Log của từng test case: runner.log (ScenarioRunner), camera.log và báo cáo JSON",
+    },
+  ];
+}
 
-/** Collapsible install guide for the Bridge CLI (Ubuntu / Windows), with this site's API address filled in. */
+/** Collapsible install guide for the Bridge CLI and its Simulator Runner (Ubuntu / Windows), with this site's API address filled in. */
 function BridgeInstallGuide() {
   const [os, setOs] = useState<GuideOs>("ubuntu");
   const server = API_BASE.startsWith("http") || typeof window === "undefined" ? API_BASE : `${window.location.origin}${API_BASE}`;
-  const steps = guideSteps(os, server);
+  const sections = guideSections(os, server);
 
   return (
     <details className="bridge-guide">
-      <summary><Icon name="file" size={14} />Hướng dẫn cài Bridge CLI</summary>
+      <summary><Icon name="file" size={14} />Hướng dẫn cài Bridge CLI và Simulator Runner</summary>
       <div className="bridge-guide-body">
         <div className="bridge-guide-tabs" role="tablist" aria-label="Hệ điều hành">
           {(["ubuntu", "windows"] as const).map((item) => (
@@ -297,18 +385,24 @@ function BridgeInstallGuide() {
             </button>
           ))}
         </div>
-        <ol className="bridge-guide-steps">
-          {steps.map((step) => (
-            <li key={step.title}>
-              <strong>{step.title}</strong>
-              {step.commands.map((command) => <CommandLine key={command} command={command} />)}
-              {step.note && <div className="field-help">{step.note}</div>}
-            </li>
-          ))}
-        </ol>
+        {sections.map((section) => (
+          <div key={section.title} className="bridge-guide-section">
+            <strong>{section.title}</strong>
+            {section.note && <div className="field-help">{section.note}</div>}
+            <ol className="bridge-guide-steps">
+              {section.steps.map((step) => (
+                <li key={step.title}>
+                  <strong>{step.title}</strong>
+                  {step.commands.map((command) => <CommandLine key={command} command={command} />)}
+                  {step.note && <div className="field-help">{step.note}</div>}
+                </li>
+              ))}
+            </ol>
+          </div>
+        ))}
         <div className="bridge-guide-daily">
           <strong>Dùng hằng ngày</strong>
-          {DAILY_COMMANDS.map((item) => (
+          {dailyCommands(os).map((item) => (
             <div key={item.command}>
               <CommandLine command={item.command} />
               <div className="field-help">{item.hint}</div>
