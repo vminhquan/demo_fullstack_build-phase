@@ -129,12 +129,3 @@ export function useCarlaDemo(projectId: number | null | undefined) {
   };
   return { state, ...actions };
 }
-
-/** One-line status used by the top bar and the overview card. */
-export function carlaStatus(state: CarlaDemoState): { label: string; tone: "ready" | "demo" | "pending" } {
-  if (state.source === "default") return { label: "Dữ liệu mặc định · Demo", tone: "demo" };
-  if (state.stage === "ready") return { label: "CARLA sẵn sàng", tone: "ready" };
-  if (state.stage === "unpaired") return { label: "Chưa kết nối CARLA", tone: "pending" };
-  if (state.stage === "awaiting_pair") return { label: "Đang chờ worker", tone: "pending" };
-  return { label: "Cần hoàn tất cài đặt CARLA", tone: "pending" };
-}

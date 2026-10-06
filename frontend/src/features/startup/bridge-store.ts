@@ -156,3 +156,22 @@ export function useBridges(projectId: number | null | undefined) {
 
   return { bridges: bridges ?? [], loaded: bridges !== null, pending, live, error, reload, requestPair, cancelPair, remove, sync };
 }
+
+export type BridgeStatus = { label: string; tone: "ready" | "demo" | "pending"; detail: string };
+
+/** Status pill of the project's CARLA environment, from the live Bridge list (null = still loading). */
+export function bridgeStatus(bridges: Bridge[] | null, usingDefault: boolean): BridgeStatus {
+  if (bridges === null) return { label: "Đang kiểm tra CARLA…", tone: "pending", detail: "Đang tải danh sách Bridge." };
+  const online = bridges.filter((item) => item.online);
+  const running = online.filter((item) => item.carla_reachable);
+  const synced = running.filter((item) => item.synced_maps.length > 0);
+  const names = (items: Bridge[]) => items.map((item) => item.name).join(", ");
+  if (synced.length) {
+    return { label: "CARLA sẵn sàng", tone: "ready", detail: `${names(synced)} · CARLA đang chạy, đã đồng bộ ${synced[0].synced_maps.length} map.` };
+  }
+  if (running.length) return { label: "CARLA đang chạy · chưa đồng bộ map", tone: "pending", detail: `${names(running)} · bấm “Đồng bộ dữ liệu CARLA” ở Start up.` };
+  if (online.length) return { label: "Bridge online · CARLA chưa chạy", tone: "pending", detail: `${names(online)} · mở CARLA trên máy đó.` };
+  if (bridges.length) return { label: "Bridge offline", tone: "pending", detail: `${names(bridges)} · chạy  scenario-forge-bridge run  trên máy đó.` };
+  if (usingDefault) return { label: "Dữ liệu mặc định", tone: "demo", detail: "Đang dùng bộ map CARLA dựng sẵn; chưa có Bridge nào." };
+  return { label: "Chưa kết nối CARLA", tone: "pending", detail: "Chưa có Bridge nào: cài Bridge và ghép nối ở Start up." };
+}

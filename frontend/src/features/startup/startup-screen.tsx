@@ -8,9 +8,9 @@ import { useSession } from "@/shared/auth/session-context";
 import { ErrorNotice, formatDate, Loading } from "@/shared/ui/components";
 import { useProjectPath } from "@/shared/ui/project-path";
 import { Icon } from "@/shared/ui/icons";
-import { carlaStatus, useCarlaDemo } from "@/features/startup/carla-demo";
+import { useCarlaDemo } from "@/features/startup/carla-demo";
 
-import { Bridge, isPairExpired, OTP_LENGTH, PendingPair, useBridges } from "./bridge-store";
+import { Bridge, bridgeStatus, isPairExpired, OTP_LENGTH, PendingPair, useBridges } from "./bridge-store";
 
 /* /start-up — first step of a project: pick where CARLA data comes from. */
 export function StartUpScreen() {
@@ -37,8 +37,8 @@ export function StartUpScreen() {
   }, [session]);
 
   if (!session || !project) return <Loading text="Hãy chọn một Project…" />;
-  const status = carlaStatus(carla.state);
   const usingDefault = carla.state.source === "default";
+  const status = bridgeStatus(bridges.bridges, usingDefault);
 
   return (
     <main className="main">
@@ -49,7 +49,7 @@ export function StartUpScreen() {
           <p>Chọn nguồn dữ liệu CARLA cho Project {project.name}: đồng bộ với CARLA trên một hoặc nhiều máy qua Scenario Forge Bridge, hoặc dùng bộ map dựng sẵn.</p>
         </div>
         <div className="heading-actions">
-          <span className={`pill carla-pill-${status.tone}`}>{status.label}</span>
+          <span className={`pill carla-pill-${status.tone}`} title={status.detail}>{status.label}</span>
         </div>
       </section>
 

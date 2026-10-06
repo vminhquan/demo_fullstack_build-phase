@@ -29,7 +29,8 @@ import { useConfirm } from "@/shared/ui/modal";
 import { backTarget, safeFrom } from "@/shared/ui/back-target";
 import { useProjectPath } from "@/shared/ui/project-path";
 import { Icon } from "@/shared/ui/icons";
-import { carlaStatus, useCarlaDemo } from "@/features/startup/carla-demo";
+import { bridgeStatus, useBridges } from "@/features/startup/bridge-store";
+import { useCarlaDemo } from "@/features/startup/carla-demo";
 
 import { MetadataFields } from "./metadata-fields";
 import { XoscPreview } from "./xosc-preview";
@@ -80,6 +81,7 @@ export function DashboardScreen() {
   const p = useProjectPath();
   const { session, can } = useSession();
   const carla = useCarlaDemo(session?.active_project?.id);
+  const bridges = useBridges(session?.active_project?.id);
   const [counts, setCounts] = useState<{ total: number; approved: number; inReview: number } | null>(null);
   const [error, setError] = useState("");
   const load = useCallback(async () => {
@@ -106,7 +108,7 @@ export function DashboardScreen() {
   useEffect(() => {
     void load();
   }, [load]);
-  const status = carlaStatus(carla.state);
+  const status = bridgeStatus(bridges.bridges, carla.state.source === "default");
   return (
     <main className="main">
       {pageTitle(
@@ -165,18 +167,18 @@ export function DashboardScreen() {
           <div className="panel-header">
             <div>
               <div className="panel-title">Môi trường CARLA</div>
-              <div className="panel-subtitle">Bản demo giao diện</div>
+              <div className="panel-subtitle">Bridge và CARLA trên máy đã ghép</div>
             </div>
             <span className={`pill carla-pill-${status.tone}`}>{status.label}</span>
           </div>
           <div className="setup-body">
-            <p className="muted">
-              {carla.state.source === "default"
-                ? "Đang dùng dữ liệu mặc định cho luồng demo."
-                : carla.state.stage === "ready"
-                  ? `CARLA đã kết nối và catalog đã đồng bộ lúc ${formatDate(carla.state.lastSync)}.`
-                  : "Chưa có môi trường CARLA sẵn sàng để tạo hoặc chạy scenario mới."}
-            </p>
+            <p className="muted">{status.detail}</p>
+            {(bridges.bridges ?? []).map((item) => (
+              <div key={item.connection_uid} className="case-key">
+                {item.name} · {item.online ? "Online" : "Offline"} · CARLA {item.carla_reachable ? "đang chạy" : "chưa chạy"}
+                {item.last_synced_at ? ` · đồng bộ ${formatDate(item.last_synced_at)}` : ""}
+              </div>
+            ))}
             <Link className="button" href={p("/start-up")}>Mở Start up</Link>
           </div>
         </section>
