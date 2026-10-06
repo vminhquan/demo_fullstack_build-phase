@@ -20,7 +20,6 @@ from app.modules.builder.service import fail_interrupted_sessions
 from app.modules.catalog.router import router as catalog_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.execution.router import router as execution_router
-from app.modules.execution.router import worker_router as execution_worker_router
 from app.modules.identity.dependencies import project_path_param
 from app.modules.generation.router import router as generation_router
 from app.modules.odd.router import router as odd_router
@@ -93,8 +92,8 @@ async def health_ready() -> dict[str, str]:
     return {"status": "ready"}
 
 
-# Account, project list/administration, the CARLA worker and the Bridge device endpoints are not inside one project.
-for router in (auth_router, project_router, execution_worker_router, bridge_public_router):
+# Account, project list/administration and the Bridge device endpoints are not inside one project.
+for router in (auth_router, project_router, bridge_public_router):
     app.include_router(router, prefix=settings.api_prefix)
 
 # Everything else belongs to one project: /api/v1/projects/{project_id}/…

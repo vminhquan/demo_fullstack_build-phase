@@ -2,7 +2,7 @@
 
 Phần mềm cài trên **máy có CARLA** (Ubuntu hoặc Windows) để nối máy đó với một hoặc nhiều Project trên Scenario Forge.
 
-Bridge là ống thông giữa Scenario Forge (production) và CARLA trên máy người dùng. Hiện làm được: **ghép nối bằng OTP 6 số**, **giữ kết nối lâu dài qua WebSocket**, **kiểm tra cổng CARLA (2000)** và **đồng bộ dữ liệu mọi map của CARLA** lên Project để Test Case Builder và Agent dùng. Chưa chạy kịch bản trên CARLA.
+Bridge là ống thông giữa Scenario Forge (production) và CARLA trên máy người dùng. Hiện làm được: **ghép nối bằng OTP 6 số**, **giữ kết nối lâu dài qua WebSocket**, **kiểm tra cổng CARLA (2000)** **đồng bộ dữ liệu mọi map của CARLA** lên Project để Test Case Builder và Agent dùng, và **chạy test case (XOSC) bằng ScenarioRunner** khi Simulator Runner gửi xuống rồi trả kết quả về.
 
 ## Luồng ghép nối
 
@@ -73,6 +73,47 @@ Bridge ─(mỗi map)─▶ POST /bridge/catalog (device token) ─▶ snapshot 
 Bridge ─▶ WS catalog.sync.progress / catalog.sync.done ─▶ Backend ─▶ Web (thanh tiến độ)
 ```
 
+## Chạy test case (Simulator Runner)
+
+Web chọn test case → Simulator Runner → chọn Bridge. Backend gửi `run.assign` (XOSC của mọi test case) qua WebSocket; Bridge chạy lần lượt
+từng test case bằng ScenarioRunner trong một tiến trình con rồi trả `job.started` → `job.completed | job.failed` → `run.completed`
+(hợp đồng: `docs/21-simulator-runner-bridge.md`).
+
+### Chuẩn bị máy (một lần, ví dụ CARLA 0.9.16 trên Ubuntu / Linux Mint)
+
+```bash
+# Python 3.10 hoặc 3.11 (numpy==1.24.4 của ScenarioRunner không có bản cho 3.12). Không có thì dùng uv:
+curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
+uv venv --python 3.10 ~/sr-venv
+
+git clone -b v0.9.16 --depth 1 https://github.com/carla-simulator/scenario_runner.git ~/scenario_runner
+uv pip install --python ~/sr-venv/bin/python carla==0.9.16 -r ~/scenario_runner/requirements.txt
+
+# Hai bản vá cho lỗi của ScenarioRunner v0.9.16 khi xe ego có AssignRouteAction
+F=~/scenario_runner/srunner/scenariomanager/scenarioatomics/atomic_behaviors.py
+sed -i 's/        if len(self._waypoints) != len(self._times):/        if self._times is not None and len(self._waypoints) != len(self._times):/' $F
+sed -i 's/^                actor_dict\[self._actor.id\].reset()$/                if actor_dict[self._actor.id] is not self._actor_control:\n                    actor_dict[self._actor.id].reset()/' $F
+
+# Cho Bridge biết dùng gì
+scenario-forge-bridge config --runner-python ~/sr-venv/bin/python --runner-root ~/scenario_runner --carla-root ~/CARLA_0.9.16
+scenario-forge-bridge status      # dòng "Runner : sẵn sàng"
+```
+
+Mở CARLA **có cửa sổ** (`./CarlaUE4.sh`) rồi `scenario-forge-bridge run`. Khi chạy test, camera cửa sổ CARLA tự bám xe ego và lùi ra
+để thấy cả hai xe lúc sắp va chạm (`config --camera off` để tắt).
+
+### Mỗi test case
+
+1. Kiểm tra `sha256(xosc)` = `xosc_sha256` (lệch → `job.failed XOSC_HASH_MISMATCH`) và cổng CARLA (đóng → `CARLA_UNREACHABLE`).
+2. Thêm `criteria_CollisionTest` vào StopTrigger: không có criteria thì ScenarioRunner luôn coi là đạt.
+3. Chạy `<runner_python> scenario_runner.py --openscenario … --json --outputDir …` với `PYTHONPATH=<carla_root>/PythonAPI/carla`
+   (gói `agents`); quá `timeout_s` → dừng tiến trình, `job.failed TIMEOUT`.
+4. Đọc báo cáo JSON: `success` → `PASS`/`FAIL`, `CollisionTest.actual` → `collision_count`. Exit code chỉ để tham khảo
+   (ScenarioRunner có thể trả 120 dù chạy xong).
+
+Thư mục làm việc (XOSC, `runner.log`, `camera.log`, báo cáo JSON) giữ lại ở `<thư mục cấu hình>/runs/<run_id>/<case_key>/` để tra lỗi.
+Thiếu cấu hình runner → cả phiên bị từ chối `RUNNER_NOT_READY` kèm lý do.
+
 ## Lệnh
 
 ```bash
@@ -86,6 +127,7 @@ scenario-forge-bridge sync --maps Town03,Town10HD_Opt --connection CONN-XXXX
 scenario-forge-bridge unpair CONN-XXXX    # gỡ khỏi một Project
 scenario-forge-bridge unpair --all        # gỡ tất cả và xóa device token
 scenario-forge-bridge config --server URL --carla-host 127.0.0.1 --carla-port 2000
+scenario-forge-bridge config --runner-python ~/sr-venv/bin/python --runner-root ~/scenario_runner --carla-root ~/CARLA_0.9.16 --camera follow
 ```
 
 `sfbridge` là tên ngắn của cùng lệnh.
@@ -106,6 +148,10 @@ pytest && ruff check .
 ```
 
 ## Giới hạn hiện tại
+
+- Kết quả test case gửi lúc đang mất kết nối chưa được lưu để gửi lại: backend sẽ đánh `TIMEOUT` / `MISSING_RESULT` cho test case đó.
+- Không bấm "Đồng bộ dữ liệu CARLA" khi đang chạy test: cả hai cùng đổi map.
+- Test case bị dừng vì quá thời gian có thể để lại xe trên map: mở lại CARLA trước lần chạy sau.
 
 - Backend giữ WebSocket trong bộ nhớ của **một** tiến trình. Chạy nhiều instance backend cần pub/sub chung (RabbitMQ fan-out hoặc Redis) sau `app/modules/bridge/hub.py`.
 - Giới hạn nhập sai mã (10 lần / 10 phút theo IP) cũng nằm trong bộ nhớ. Sau reverse proxy cần bật proxy headers để lấy đúng IP người dùng.

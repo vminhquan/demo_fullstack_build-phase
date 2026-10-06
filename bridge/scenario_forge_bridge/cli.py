@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime
 
 import typer
@@ -13,6 +14,7 @@ from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.channel import ChannelRejected
 from scenario_forge_bridge.channel import run as run_channel
 from scenario_forge_bridge.config import Connection
+from scenario_forge_bridge.runner import runner_problems
 
 app = typer.Typer(
     add_completion=False,
@@ -135,6 +137,12 @@ def status() -> None:
     probe = probe_carla(cfg.carla_host, cfg.carla_port)
     carla = "đã chạy" if probe.reachable else f"chưa chạy ({probe.error})"
     typer.echo(f"CARLA        : {probe.host}:{probe.port} {carla}")
+    problems = runner_problems(cfg)
+    state = "sẵn sàng" if not problems else "chưa sẵn sàng"
+    typer.echo(f"Runner       : {state} · python={cfg.runner_python or '—'} · scenario_runner={cfg.runner_root or '—'}")
+    for problem in problems:
+        typer.echo(f"  - {problem}")
+    typer.echo(f"Camera       : {cfg.camera}")
     if not cfg.connections:
         typer.echo("Project      : chưa ghép project nào")
         return
@@ -237,11 +245,20 @@ def set_config(
     carla_host: str = typer.Option(None, "--carla-host"),
     carla_port: int = typer.Option(None, "--carla-port"),
     name: str = typer.Option(None, "--name", "-n"),
+    runner_python: str = typer.Option(None, "--runner-python", help="Python đã cài carla + thư viện ScenarioRunner, ví dụ ~/sr-venv/bin/python."),
+    runner_root: str = typer.Option(None, "--runner-root", help="Thư mục chứa scenario_runner.py, ví dụ ~/scenario_runner."),
+    carla_root: str = typer.Option(None, "--carla-root", help="Thư mục cài CARLA (có PythonAPI/carla/agents)."),
+    camera: str = typer.Option(None, "--camera", help="follow: camera cửa sổ CARLA bám xe ego khi chạy test; off: không đụng tới camera."),
 ) -> None:
-    """Xem hoặc đổi cấu hình (máy chủ, địa chỉ CARLA, tên máy)."""
+    """Xem hoặc đổi cấu hình (máy chủ, địa chỉ CARLA, tên máy, Simulator Runner)."""
     cfg = config_store.load()
+    if camera and camera not in ("follow", "off"):
+        fail("--camera chỉ nhận follow hoặc off.")
+    paths = {key: os.path.abspath(os.path.expanduser(value)) if value else value
+             for key, value in (("runner_python", runner_python), ("runner_root", runner_root), ("carla_root", carla_root))}
     changed = False
-    for field, value in (("server", server and server.rstrip("/")), ("carla_host", carla_host), ("carla_port", carla_port), ("name", name)):
+    for field, value in (("server", server and server.rstrip("/")), ("carla_host", carla_host), ("carla_port", carla_port), ("name", name),
+                         *paths.items(), ("camera", camera)):
         if value:
             setattr(cfg, field, value)
             changed = True
@@ -249,6 +266,9 @@ def set_config(
         config_store.save(cfg)
         log("Đã lưu cấu hình.")
     typer.echo(f"server={cfg.server}\ncarla={cfg.carla_host}:{cfg.carla_port}\nname={cfg.name or machine.hostname()}")
+    typer.echo(f"runner_python={cfg.runner_python}\nrunner_root={cfg.runner_root}\ncarla_root={cfg.carla_root}\ncamera={cfg.camera}")
+    for problem in runner_problems(cfg):
+        typer.secho(f"  ! {problem}", fg=typer.colors.YELLOW)
 
 
 def main() -> None:

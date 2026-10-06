@@ -2,21 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.shared.infrastructure.models import RunVerdict
-
-
-class WorkerCompleteRequest(BaseModel):
-    verdict: RunVerdict
-    metrics: dict[str, Any] = Field(default_factory=dict)
-    scenario_runner_exit_code: int | None = None
-    duration_ms: int | None = Field(default=None, ge=0)
-
-
-class WorkerFailedRequest(BaseModel):
-    error_code: str = Field(min_length=1, max_length=120)
-    error_message: str | None = Field(default=None, max_length=4000)
 
 
 class RunResultResponse(BaseModel):

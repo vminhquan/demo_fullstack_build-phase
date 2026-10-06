@@ -1,4 +1,5 @@
-"""Long-lived WebSocket channel to the backend: welcome, heartbeats with the CARLA probe, reconnect with backoff."""
+"""Long-lived WebSocket channel to the backend: welcome, heartbeats with the CARLA probe, catalog sync,
+simulator runs (run.assign), reconnect with backoff."""
 from __future__ import annotations
 
 import asyncio
@@ -14,6 +15,7 @@ from scenario_forge_bridge import config as config_store
 from scenario_forge_bridge.carla_catalog import CarlaUnavailable, collect
 from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.config import BridgeConfig, Connection
+from scenario_forge_bridge.runner import RunExecutor, runner_problems
 
 HEARTBEAT_SECONDS = 15
 MAX_BACKOFF_SECONDS = 30
@@ -104,7 +106,7 @@ def _apply_connections(cfg: BridgeConfig, items: list[dict]) -> None:
     config_store.save(cfg)
 
 
-async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: bool, state: dict) -> bool:
+async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: bool, state: dict, executor: RunExecutor) -> bool:
     """One connected session. Returns True when the Bridge should stop (no project left)."""
     async with connect(
         cfg.ws_url,
@@ -112,7 +114,10 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
         open_timeout=10,
         ping_interval=20,
         ping_timeout=20,
+        # run.assign carries the XOSC of every test case: far above the 1 MiB default.
+        max_size=None,
     ) as ws:
+        state["ws"] = ws
         heartbeat = asyncio.create_task(_heartbeats(ws, cfg, log))
         sync_task: asyncio.Task | None = None
         try:
@@ -147,9 +152,13 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
                     else:
                         # Heartbeats and other messages keep flowing while the maps load.
                         sync_task = asyncio.create_task(_sync_catalog(ws, cfg, token, message, log))
+                elif kind == "run.assign":
+                    await executor.accept(message)
                 elif kind == "error":
-                    log(f"Máy chủ báo lỗi: {message.get('code')}")
+                    ref = f" ({message['ref']})" if message.get("ref") else ""
+                    log(f"Máy chủ báo lỗi{ref}: {message.get('code')} {message.get('message') or ''}".rstrip())
         finally:
+            state["ws"] = None
             heartbeat.cancel()
             if sync_task is not None:
                 sync_task.cancel()
@@ -157,11 +166,35 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
 
 
 async def run(cfg: BridgeConfig, token: str, log: Log, *, stop_when_unlinked: bool = True) -> None:
+    state: dict = {"ws": None}
+
+    async def send(message: dict) -> None:
+        ws = state.get("ws")
+        if ws is None:
+            log(f"Mất kết nối, chưa gửi được {message.get('type')} (phiên {message.get('run_id')}).")
+            return
+        try:
+            await ws.send(json.dumps(message))
+        except ConnectionClosed:
+            log(f"Mất kết nối khi gửi {message.get('type')} (phiên {message.get('run_id')}).")
+
+    problems = runner_problems(cfg)
+    log("Simulator Runner sẵn sàng." if not problems else "Simulator Runner chưa sẵn sàng: " + "; ".join(problems))
+    # The executor outlives socket sessions so a reconnect never interrupts a running scenario.
+    executor = RunExecutor(cfg, send, log)
+    serving = asyncio.create_task(executor.serve())
+    try:
+        await _reconnect_loop(cfg, token, log, stop_when_unlinked, state, executor)
+    finally:
+        serving.cancel()
+
+
+async def _reconnect_loop(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: bool, state: dict, executor: RunExecutor) -> None:
     backoff = 1.0
     while True:
-        state = {"connected": False}
+        state["connected"] = False
         try:
-            if await _session(cfg, token, log, stop_when_unlinked, state):
+            if await _session(cfg, token, log, stop_when_unlinked, state, executor):
                 return
             log("Máy chủ đóng kết nối.")
         except InvalidStatus as exc:

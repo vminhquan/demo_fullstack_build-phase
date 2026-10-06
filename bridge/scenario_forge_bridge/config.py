@@ -39,6 +39,12 @@ class BridgeConfig:
     bridge_uid: str | None = None
     carla_host: str = DEFAULT_HOST
     carla_port: int = DEFAULT_PORT
+    # Simulator Runner: a separate Python (with carla + ScenarioRunner deps) runs scenario_runner.py.
+    # The packaged Bridge has no `carla` package, so everything touching CARLA runs in that Python.
+    runner_python: str = ""
+    runner_root: str = ""   # folder holding scenario_runner.py
+    carla_root: str = ""    # CARLA install; PythonAPI/carla provides the `agents` package
+    camera: str = "follow"  # follow: move the CARLA window camera onto the ego during a run; off: leave it
     connections: list[Connection] = field(default_factory=list)
 
     @property

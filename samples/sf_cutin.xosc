@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="utf-8"?>
+<OpenSCENARIO>
+  <FileHeader revMajor="1" revMinor="0" date="2026-10-06T16:18:46" description="ScenarioForge: sc_motorcycle_cut_in_rain_intersection" author="ScenarioForge Agent" />
+  <ParameterDeclarations />
+  <CatalogLocations />
+  <RoadNetwork>
+    <LogicFile filepath="Town10HD_Opt" />
+    <SceneGraphFile filepath="" />
+  </RoadNetwork>
+  <Entities>
+    <ScenarioObject name="hero">
+      <Vehicle name="vehicle.tesla.model3" vehicleCategory="car">
+        <ParameterDeclarations />
+        <BoundingBox>
+          <Center x="1.4" y="0.0" z="0.8" />
+          <Dimensions width="2.0" length="4.5" height="1.6" />
+        </BoundingBox>
+        <Performance maxSpeed="69.444" maxAcceleration="10.0" maxDeceleration="10.0" />
+        <Axles>
+          <FrontAxle maxSteering="0.5" wheelDiameter="0.6" trackWidth="1.8" positionX="3.1" positionZ="0.3" />
+          <RearAxle maxSteering="0.0" wheelDiameter="0.6" trackWidth="1.8" positionX="0.0" positionZ="0.3" />
+        </Axles>
+        <Properties>
+          <Property name="type" value="ego_vehicle" />
+        </Properties>
+      </Vehicle>
+    </ScenarioObject>
+    <ScenarioObject name="adversary_0">
+      <Vehicle name="vehicle.yamaha.yzf" vehicleCategory="motorbike">
+        <ParameterDeclarations />
+        <BoundingBox>
+          <Center x="1.4" y="0.0" z="0.8" />
+          <Dimensions width="2.0" length="4.5" height="1.6" />
+        </BoundingBox>
+        <Performance maxSpeed="69.444" maxAcceleration="10.0" maxDeceleration="10.0" />
+        <Axles>
+          <FrontAxle maxSteering="0.5" wheelDiameter="0.6" trackWidth="1.8" positionX="3.1" positionZ="0.3" />
+          <RearAxle maxSteering="0.0" wheelDiameter="0.6" trackWidth="1.8" positionX="0.0" positionZ="0.3" />
+        </Axles>
+        <Properties>
+          <Property name="type" value="simulation" />
+        </Properties>
+      </Vehicle>
+    </ScenarioObject>
+  </Entities>
+  <Storyboard>
+    <Init>
+      <Actions>
+        <GlobalAction>
+          <EnvironmentAction>
+            <Environment name="Env_rain">
+              <TimeOfDay animation="false" dateTime="2026-09-26T15:00:00" />
+              <Weather cloudState="rainy">
+                <Sun intensity="1.0" azimuth="0.0" elevation="0.873" />
+                <Fog visualRange="10000.0" />
+                <Precipitation precipitationType="rain" intensity="0.30" />
+              </Weather>
+              <RoadCondition frictionScaleFactor="0.7" />
+            </Environment>
+          </EnvironmentAction>
+        </GlobalAction>
+        <Private entityRef="hero">
+          <PrivateAction>
+            <TeleportAction>
+              <Position>
+                <WorldPosition x="59.810" y="-24.850" z="0.800" h="-0.0028" />
+              </Position>
+            </TeleportAction>
+          </PrivateAction>
+          <PrivateAction>
+            <LongitudinalAction>
+              <SpeedAction>
+                <SpeedActionDynamics dynamicsShape="step" value="0.0" dynamicsDimension="time" />
+                <SpeedActionTarget>
+                  <AbsoluteTargetSpeed value="11.111" />
+                </SpeedActionTarget>
+              </SpeedAction>
+            </LongitudinalAction>
+          </PrivateAction>
+          <PrivateAction>
+            <RoutingAction>
+              <AssignRouteAction>
+                <Route name="ego_route" closed="false">
+                  <Waypoint routeStrategy="shortest">
+                    <Position>
+                      <WorldPosition x="59.410" y="-24.850" z="0.800" h="-0.0028" />
+                    </Position>
+                  </Waypoint>
+                  <Waypoint routeStrategy="shortest">
+                    <Position>
+                      <WorldPosition x="87.040" y="-24.930" z="0.800" h="6.2804" />
+                    </Position>
+                  </Waypoint>
+                  <Waypoint routeStrategy="shortest">
+                    <Position>
+                      <WorldPosition x="109.280" y="-8.820" z="0.800" h="1.3516" />
+                    </Position>
+                  </Waypoint>
+                  <Waypoint routeStrategy="shortest">
+                    <Position>
+                      <WorldPosition x="109.980" y="22.600" z="0.800" h="1.5561" />
+                    </Position>
+                  </Waypoint>
+                  <Waypoint routeStrategy="shortest">
+                    <Position>
+                      <WorldPosition x="99.610" y="51.890" z="0.800" h="2.2665" />
+                    </Position>
+                  </Waypoint>
+                </Route>
+              </AssignRouteAction>
+            </RoutingAction>
+          </PrivateAction>
+        </Private>
+        <Private entityRef="adversary_0">
+          <PrivateAction>
+            <TeleportAction>
+              <Position>
+                <WorldPosition x="85.030" y="-28.420" z="0.800" h="6.2804" />
+              </Position>
+            </TeleportAction>
+          </PrivateAction>
+          <PrivateAction>
+            <LongitudinalAction>
+              <SpeedAction>
+                <SpeedActionDynamics dynamicsShape="step" value="0.0" dynamicsDimension="time" />
+                <SpeedActionTarget>
+                  <AbsoluteTargetSpeed value="12.500" />
+                </SpeedActionTarget>
+              </SpeedAction>
+            </LongitudinalAction>
+          </PrivateAction>
+        </Private>
+      </Actions>
+    </Init>
+    <Story name="Story_sc_motorcycle_cut_in_rain_intersection">
+      <Act name="Act_sc_motorcycle_cut_in_rain_intersection">
+        <ManeuverGroup maximumExecutionCount="1" name="MG_adversary_0">
+          <Actors selectTriggeringEntities="false">
+            <EntityRef entityRef="adversary_0" />
+          </Actors>
+          <Maneuver name="Maneuver_adversary_0">
+            <Event name="Event_adversary_0" priority="overwrite">
+              <Action name="Action_cut_in_0">
+                <PrivateAction>
+                  <LateralAction>
+                    <LaneChangeAction>
+                      <LaneChangeActionDynamics dynamicsShape="sinusoidal" value="25.0" dynamicsDimension="distance" />
+                      <LaneChangeTarget>
+                        <RelativeTargetLane entityRef="hero" value="0" />
+                      </LaneChangeTarget>
+                    </LaneChangeAction>
+                  </LateralAction>
+                </PrivateAction>
+              </Action>
+              <StartTrigger>
+                <ConditionGroup>
+                  <Condition name="Trigger_adversary_0" delay="0" conditionEdge="rising">
+                    <ByEntityCondition>
+                      <TriggeringEntities triggeringEntitiesRule="any">
+                        <EntityRef entityRef="hero" />
+                      </TriggeringEntities>
+                      <EntityCondition>
+                        <RelativeDistanceCondition entityRef="adversary_0" relativeDistanceType="cartesianDistance" value="12.0" freespace="false" rule="lessThan" />
+                      </EntityCondition>
+                    </ByEntityCondition>
+                  </Condition>
+                </ConditionGroup>
+              </StartTrigger>
+            </Event>
+          </Maneuver>
+        </ManeuverGroup>
+        <StartTrigger>
+          <ConditionGroup>
+            <Condition name="ActStart" delay="0" conditionEdge="rising">
+              <ByValueCondition>
+                <SimulationTimeCondition value="0" rule="greaterThan" />
+              </ByValueCondition>
+            </Condition>
+          </ConditionGroup>
+        </StartTrigger>
+      </Act>
+    </Story>
+    <StopTrigger>
+      <ConditionGroup>
+        <Condition name="EndSim" delay="0" conditionEdge="rising">
+          <ByValueCondition>
+            <SimulationTimeCondition value="20.0" rule="greaterThan" />
+          </ByValueCondition>
+        </Condition>
+      </ConditionGroup>
+    </StopTrigger>
+  </Storyboard>
+</OpenSCENARIO>
