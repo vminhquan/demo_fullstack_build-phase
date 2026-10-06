@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import secrets
 import zlib
@@ -10,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.bridge.hub import hub
+from app.modules.bridge.runs import RUN_MESSAGES, dispatch_pending, handle_run_message
 from app.modules.bridge.schemas import (
     BridgeCatalogStored,
     BridgeCatalogUpload,
@@ -25,6 +27,7 @@ from app.modules.bridge.service import (
     PAIR_CODE_TTL,
     active_connections,
     bridge_from_token,
+    bridge_online,
     cancel_pair_code,
     issue_pair_code,
     limiter,
@@ -66,7 +69,7 @@ def connection_view(
         hostname=bridge.hostname,
         os=bridge.os,
         bridge_version=bridge.bridge_version,
-        online=hub.is_online(bridge.id),
+        online=bridge_online(bridge),
         carla_host=bridge.carla_host,
         carla_port=bridge.carla_port,
         carla_reachable=bridge.carla_reachable,
@@ -124,7 +127,7 @@ async def publish_bridge_status(session: AsyncSession, bridge: Bridge, event: st
                 "type": event,
                 "connection_uid": connection.connection_uid,
                 "bridge_uid": bridge.uid,
-                "online": hub.is_online(bridge.id),
+                "online": bridge_online(bridge),
                 "carla_reachable": bridge.carla_reachable,
             },
         )
@@ -184,6 +187,8 @@ async def sync_bridge_catalog(
     current = hub.syncs.get(connection.uid)
     if current and not current.get("finished"):
         raise Conflict("Bridge đang đồng bộ dữ liệu CARLA, hãy chờ lần đồng bộ hiện tại xong")
+    if not bridge_online(connection.bridge):
+        raise Conflict("Bridge đang offline. Hãy chạy `scenario-forge-bridge run` trên máy có CARLA.")
     request_id = secrets.token_hex(8)
     sent = await hub.send_bridge(
         connection.bridge_id,
@@ -371,16 +376,19 @@ async def bridge_socket(websocket: WebSocket) -> None:
     previous = await hub.attach_bridge(bridge_id, websocket)
     if previous is not None:
         await previous.close(code=4000, reason="replaced by a newer connection")
+    pending: asyncio.Task | None = None
     try:
         async with SessionFactory() as session:
             bridge = await session.get(Bridge, bridge_id)
-            bridge.last_seen_at = now()
+            bridge.last_seen_at = bridge.online_since = now()
             await session.commit()
             connections = await active_connections(session, bridge_id)
             await websocket.send_json(
                 {"type": "bridge.welcome", "bridge_uid": bridge.uid, "connections": [item.model_dump(mode="json") for item in connections]}
             )
             await publish_bridge_status(session, bridge, "bridge.online")
+        # Runs queued while the Bridge was away (or not finished before it dropped) go out now.
+        pending = asyncio.create_task(dispatch_pending(bridge_id))
         while True:
             message = await websocket.receive_json()
             kind = message.get("type")
@@ -404,6 +412,8 @@ async def bridge_socket(websocket: WebSocket) -> None:
                 await websocket.send_json({"type": "bridge.heartbeat.ack", "server_time": now().isoformat()})
             elif kind in ("catalog.sync.progress", "catalog.sync.done"):
                 await relay_sync(bridge_id, kind, message)
+            elif kind in RUN_MESSAGES:
+                await websocket.send_json(await handle_run_message(bridge_id, message))
             else:
                 await websocket.send_json({"type": "error", "code": "UNSUPPORTED_MESSAGE", "ref_type": kind})
     except WebSocketDisconnect:
@@ -411,10 +421,14 @@ async def bridge_socket(websocket: WebSocket) -> None:
     except Exception:  # noqa: BLE001 - malformed frames close this Bridge only
         logger.exception("Bridge %s socket failed", bridge_id)
     finally:
+        if pending is not None:
+            pending.cancel()
         if await hub.detach_bridge(bridge_id, websocket):
             async with SessionFactory() as session:
                 bridge = await session.get(Bridge, bridge_id)
                 if bridge is not None:
+                    bridge.online_since = None
+                    await session.commit()
                     await publish_bridge_status(session, bridge, "bridge.offline")
                     # A sync cannot finish without the socket: close it so the page stops waiting.
                     for connection in await active_connections(session, bridge_id):

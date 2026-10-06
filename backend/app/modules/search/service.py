@@ -7,7 +7,6 @@ from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.modules.search.schemas import (
     RagSearchFilters,
@@ -25,8 +24,7 @@ from app.shared.infrastructure.models import (
     RunVerdict,
     TestCase,
     TestCaseSearchDocument,
-    TestCaseVersion,
-    VersionStatus,
+    TestCaseStatus,
 )
 
 
@@ -75,7 +73,7 @@ def infer_filters(prompt: str, explicit: RagSearchFilters) -> RagSearchFilters:
         elif has("nguy hiem cao", "high risk", "dangerous"):
             filters.danger_level = [DangerLevel.HIGH, DangerLevel.CRITICAL]
     if not filters.status:
-        filters.status = [VersionStatus.APPROVED]
+        filters.status = [TestCaseStatus.APPROVED]
     if not filters.verdict and has("that bai", "fail", "failed", "va cham", "collision", "dam"):
         filters.verdict = [RunVerdict.FAIL]
     if has("va cham", "collision", "dam"):
@@ -103,7 +101,7 @@ def database_result_summary(result: RunResult | None) -> SimulationSummary | Non
 
 
 def database_matches(
-    version: TestCaseVersion,
+    version: TestCase,
     tag_names: set[str],
     result: RunResult | None,
     filters: RagSearchFilters,
@@ -133,7 +131,7 @@ def database_matches(
 def database_score(
     prompt: str,
     case: TestCase,
-    version: TestCaseVersion,
+    version: TestCase,
     tag_names: set[str],
     search_text: str,
     result: RunResult | None,
@@ -168,18 +166,13 @@ async def search_postgres(
     body: RagSearchRequest, session: AsyncSession, project_id: int
 ) -> RagSearchResponse:
     filters = infer_filters(body.prompt, body.filters)
+    # One row per test case now (no versions); `version` below is the case itself.
     versions = (
         await session.scalars(
-            select(TestCaseVersion)
-            .join(TestCase)
-            .where(
+            select(TestCase).where(
                 TestCase.project_id == project_id,
-                TestCaseVersion.project_id == project_id,
                 TestCase.archived_at.is_(None),
-            )
-            .options(
-                selectinload(TestCaseVersion.tags),
-                selectinload(TestCaseVersion.test_case),
+                TestCase.status != TestCaseStatus.DISCARDED,
             )
         )
     ).all()
@@ -190,25 +183,25 @@ async def search_postgres(
         result_rows = await session.execute(
             select(RunResult, RunJob)
             .join(RunJob, RunResult.run_job_id == RunJob.id)
-            .where(RunJob.test_case_version_id.in_(version_ids))
+            .where(RunJob.test_case_id.in_(version_ids))
             .order_by(RunJob.finished_at.desc().nullslast(), RunResult.created_at.desc())
         )
         for result, job in result_rows.tuples():
-            latest_results.setdefault(job.test_case_version_id, result)
+            latest_results.setdefault(job.test_case_id, result)
         document_rows = await session.execute(
             select(
-                TestCaseSearchDocument.version_id,
+                TestCaseSearchDocument.test_case_id,
                 TestCaseSearchDocument.search_text,
             ).where(
                 TestCaseSearchDocument.project_id == project_id,
-                TestCaseSearchDocument.version_id.in_(version_ids),
+                TestCaseSearchDocument.test_case_id.in_(version_ids),
             )
         )
         documents = dict(document_rows.tuples().all())
 
     hits: list[RagSearchHit] = []
     for version in versions:
-        case = version.test_case
+        case = version
         tag_names = {tag.name.lower() for tag in version.tags}
         result = latest_results.get(version.id)
         if not database_matches(version, tag_names, result, filters):
@@ -229,8 +222,7 @@ async def search_postgres(
             RagSearchHit(
                 case_id=case.id,
                 case_key=case.case_key,
-                version_id=version.id,
-                version_no=version.version_no,
+                revision=version.revision,
                 title=case.title,
                 status=version.status,
                 map_code=version.map_code,

@@ -2,38 +2,38 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 
 import Link from "next/link";
-import { FormEvent, Fragment, useCallback, useEffect, useState } from "react";
+import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 
 import {
   api,
   ApiError,
+  CaseMetadata,
+  Decision,
   Grounding,
   TestCase,
-  TestCaseVersion,
-  VersionPayload,
-  VersionStatus,
+  TestCaseDecision,
+  TestCaseStatus,
 } from "@/lib/api";
 import { useSession } from "@/shared/auth/session-context";
 import {
   BackLink,
+  DangerBadge,
   downloadBlob,
   ErrorNotice,
   formatDate,
   Loading,
   StatusBadge,
-  SuccessNotice,
 } from "@/shared/ui/components";
-import { backTarget, safeFrom, withFrom } from "@/shared/ui/back-target";
+import { useConfirm } from "@/shared/ui/modal";
+import { backTarget, safeFrom } from "@/shared/ui/back-target";
 import { useProjectPath } from "@/shared/ui/project-path";
 import { Icon } from "@/shared/ui/icons";
 import { carlaStatus, useCarlaDemo } from "@/features/startup/carla-demo";
 
-import { VersionFields } from "./metadata-fields";
+import { MetadataFields } from "./metadata-fields";
 import { XoscPreview } from "./xosc-preview";
 import { CaseRunHistory } from "@/features/simulator-runs/run-screens";
-
-export { VersionFields };
 
 type LoadState<T> = { data: T | null; loading: boolean; error: string };
 const emptyLoad = <T,>(): LoadState<T> => ({
@@ -41,16 +41,6 @@ const emptyLoad = <T,>(): LoadState<T> => ({
   loading: true,
   error: "",
 });
-const DEFAULT_VERSION: VersionPayload = {
-  map_code: "",
-  ego_vehicle_code: "",
-  adversary_type: "",
-  environment_code: "",
-  danger_level: "MEDIUM",
-  scenario_input: {},
-  tag_names: [],
-  change_note: "",
-};
 
 function errorText(reason: unknown, fallback: string) {
   return reason instanceof ApiError ? reason.message : fallback;
@@ -81,13 +71,9 @@ function pageTitle(
     </section>
   );
 }
-function groundingOf(version: TestCaseVersion): Grounding | null {
-  const grounding = version.scenario_input?.grounding;
+function groundingOf(testCase: TestCase): Grounding | null {
+  const grounding = testCase.scenario_input?.grounding;
   return grounding && typeof grounding === "object" && "ego" in grounding ? (grounding as Grounding) : null;
-}
-
-function isOwner(version: TestCaseVersion, userId: number) {
-  return version.created_by === userId;
 }
 
 export function DashboardScreen() {
@@ -99,7 +85,7 @@ export function DashboardScreen() {
   const load = useCallback(async () => {
     if (!session) return;
     setError("");
-    const countCases = (status?: VersionStatus) =>
+    const countCases = (status?: TestCaseStatus) =>
       api
         .listCases(
           session.access_token,
@@ -110,7 +96,7 @@ export function DashboardScreen() {
       const [total, approved, inReview] = await Promise.all([
         countCases(),
         countCases("APPROVED"),
-        countCases("IN_REVIEW"),
+        countCases("PENDING"),
       ]);
       setCounts({ total, approved, inReview });
     } catch (reason) {
@@ -148,7 +134,7 @@ export function DashboardScreen() {
         <Stat
           label="Đang chờ duyệt"
           value={counts?.inReview ?? "—"}
-          detail="Version mới nhất đang chờ quyết định"
+          detail="Đang chờ phê duyệt hoặc không phê duyệt"
         />
       </section>
       <div className="dashboard-grid">
@@ -217,404 +203,465 @@ function Stat({
   );
 }
 
+const NAV_FILTERS = new Set(["PENDING", "APPROVED", "REJECTED", "DISCARDED"]);
+
+function metadataOf(testCase: TestCase): CaseMetadata {
+  return {
+    map_code: testCase.map_code,
+    ego_vehicle_code: testCase.ego_vehicle_code,
+    adversary_type: testCase.adversary_type,
+    environment_code: testCase.environment_code,
+    danger_level: testCase.danger_level,
+    tag_names: testCase.tags,
+  };
+}
+
+/** Keyboard shortcuts must not fire while typing or while a dialog is open. */
+function shortcutBlocked(event: KeyboardEvent) {
+  if (event.metaKey || event.ctrlKey || event.altKey) return true;
+  const target = event.target as HTMLElement | null;
+  if (target && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return true;
+  return !!document.querySelector(".modal-backdrop");
+}
+
+function CaseMenu({ testCase, busy, onDiscard, onRestore, onDownload }: {
+  testCase: TestCase; busy: boolean; onDiscard: () => void; onRestore: () => void; onDownload: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => { document.removeEventListener("mousedown", onPointer); document.removeEventListener("keydown", onKey); };
+  }, [open]);
+  const items = [
+    testCase.xosc_artifact_id && { key: "download", label: "Tải tệp .xosc", run: onDownload, destructive: false },
+    testCase.can.includes("restore") && { key: "restore", label: "Khôi phục về Chờ duyệt", run: onRestore, destructive: false },
+    testCase.can.includes("discard") && { key: "discard", label: "Loại bỏ test case", run: onDiscard, destructive: true },
+  ].filter((item): item is { key: string; label: string; run: () => void; destructive: boolean } => !!item);
+  if (!items.length) return null;
+  return (
+    <div className="card-menu" ref={ref}>
+      <button type="button" className="button" aria-label="Tùy chọn khác" aria-haspopup="menu" aria-expanded={open} disabled={busy} onClick={() => setOpen((value) => !value)}>
+        <Icon name="more" />
+      </button>
+      {open && (
+        <div className="card-menu-list" role="menu">
+          {items.map((item) => (
+            <button key={item.key} type="button" role="menuitem" className={`card-menu-item ${item.destructive ? "destructive" : ""}`} onClick={() => { setOpen(false); item.run(); }}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CaseEditForm({ testCase, onSaved, onCancel }: { testCase: TestCase; onSaved: (message: string) => void; onCancel: () => void }) {
+  const { session } = useSession();
+  const [title, setTitle] = useState(testCase.title);
+  const [description, setDescription] = useState(testCase.description ?? "");
+  const [metadata, setMetadata] = useState<CaseMetadata>(metadataOf(testCase));
+  const [tagsText, setTagsText] = useState(testCase.tags.join(", "));
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (!session) return;
+    setBusy(true);
+    setError("");
+    try {
+      const updated = await api.updateCase(session.access_token, testCase.id, {
+        expected_revision: testCase.revision,
+        title: title.trim(),
+        description: description.trim() || null,
+        ...metadata,
+        tag_names: parseTags(tagsText),
+      });
+      if (file) await api.uploadXosc(session.access_token, testCase.id, file, updated.revision);
+      const changed = file || updated.revision !== testCase.revision;
+      onSaved(!changed ? "Không có thay đổi nào." : testCase.status === "PENDING" ? "Đã lưu chỉnh sửa." : "Đã lưu chỉnh sửa · test case quay về Chờ duyệt.");
+    } catch (reason) {
+      setError(errorText(reason, "Không lưu được chỉnh sửa."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="panel form-panel" onSubmit={save}>
+      <div className="panel-header">
+        <div>
+          <div className="panel-title">Sửa test case</div>
+          <div className="panel-subtitle">Ghi đè trực tiếp, không gọi lại Agent.</div>
+        </div>
+      </div>
+      {testCase.status !== "PENDING" && (
+        <div className="notice notice-info">Lưu thay đổi sẽ đưa test case về <b>Chờ duyệt</b> và cần được phê duyệt lại.</div>
+      )}
+      {error && <ErrorNotice>{error}</ErrorNotice>}
+      <div className="form-grid">
+        <label className="field field-wide">
+          Tiêu đề
+          <input required maxLength={300} value={title} onChange={(event) => setTitle(event.target.value)} />
+        </label>
+        <label className="field field-wide">
+          Mô tả
+          <textarea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
+        </label>
+      </div>
+      <MetadataFields
+        value={metadata}
+        onChange={setMetadata}
+        tagsText={tagsText}
+        onTagsChange={setTagsText}
+        catalogSnapshotId={testCase.catalog_snapshot_id}
+      />
+      <div className="form-grid">
+        <label className="field field-wide">
+          Thay tệp .xosc (không bắt buộc)
+          <input type="file" accept=".xosc,.xml" onChange={(event) => setFile(event.target.files?.[0] ?? null)} />
+        </label>
+      </div>
+      <div className="form-actions">
+        <button type="button" className="button" disabled={busy} onClick={onCancel}>Hủy</button>
+        <button className="button primary" disabled={busy}>{busy ? "Đang lưu…" : "Lưu chỉnh sửa"}</button>
+      </div>
+    </form>
+  );
+}
+
+const DECISION_LABEL: Record<Decision, string> = { APPROVED: "Phê duyệt", REJECTED: "Không phê duyệt" };
+type Toast = { message: string; undoId?: number };
+// Moving to another case remounts the page ([id] segment), so the toast is handed over here.
+let carriedToast: Toast | null = null;
+const AUTO_NEXT_KEY = "scenario-forge.review-auto-next";
+function readAutoNext() {
+  try { return localStorage.getItem(AUTO_NEXT_KEY) !== "0"; } catch { return true; }
+}
+function saveAutoNext(value: boolean) {
+  try { localStorage.setItem(AUTO_NEXT_KEY, value ? "1" : "0"); } catch { /* per-viewer convenience only */ }
+}
+
 export function TestCaseDetailScreen() {
   const p = useProjectPath();
   const { session } = useSession();
   const params = useParams<{ id: string }>();
-  const from = safeFrom(useSearchParams().get("from"));
+  const router = useRouter();
+  const search = useSearchParams();
+  const from = safeFrom(search.get("from"));
   const back = backTarget(from, p);
-  const [state, setState] =
-    useState<LoadState<{ testCase: TestCase; versions: TestCaseVersion[] }>>(
-      emptyLoad(),
-    );
+  const builderSession = search.get("session");
+  const navFilter = search.get("filter") ?? "ALL";
+  const { confirm, dialog } = useConfirm();
+  const [state, setState] = useState<LoadState<{ testCase: TestCase; decisions: TestCaseDecision[] }>>(emptyLoad());
+  // Cases of the same Builder session (and tab) for Trước / Sau.
+  const [siblings, setSiblings] = useState<number[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [autoNext, setAutoNext] = useState(readAutoNext);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [toast, setToast] = useState<Toast | null>(() => {
+    const handed = carriedToast;
+    carriedToast = null;
+    return handed;
+  });
+
   const load = useCallback(async () => {
     if (!session) return;
     setState((old) => ({ ...old, loading: old.data === null, error: "" }));
     try {
-      const [testCase, versions] = await Promise.all([
+      const [testCase, decisions] = await Promise.all([
         api.getCase(session.access_token, params.id),
-        api.listVersions(session.access_token, params.id),
+        api.listCaseDecisions(session.access_token, params.id),
       ]);
-      setState({ data: { testCase, versions }, loading: false, error: "" });
+      setState({ data: { testCase, decisions }, loading: false, error: "" });
     } catch (reason) {
-      setState({
-        data: null,
-        loading: false,
-        error: errorText(reason, "Không thể tải chi tiết Test Case."),
-      });
+      setState({ data: null, loading: false, error: errorText(reason, "Không thể tải chi tiết Test Case.") });
     }
   }, [params.id, session]);
+
+  const loadSiblings = useCallback(async () => {
+    if (!session || !builderSession) return;
+    const query = new URLSearchParams({ builder_session_id: builderSession, page_size: "200", include_discarded: "true" });
+    if (NAV_FILTERS.has(navFilter)) query.set("status", navFilter);
+    try {
+      const page = await api.listCases(session.access_token, query);
+      setSiblings(page.items.map((item) => item.id));
+    } catch {
+      setSiblings([]);
+    }
+  }, [builderSession, navFilter, session]);
+
+  useEffect(() => { setEditing(false); setError(""); void load(); }, [load]);
+  useEffect(() => { void loadSiblings(); }, [loadSiblings]);
   useEffect(() => {
-    void load();
-  }, [load]);
-  if (state.loading)
-    return (
-      <main className="main">
-        <Loading />
-      </main>
-    );
-  if (!state.data)
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), toast.undoId ? 5000 : 6000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  const currentId = Number(params.id);
+  const position = siblings.indexOf(currentId);
+  const go = useCallback((id: number | undefined) => {
+    if (!id) return;
+    const query = new URLSearchParams(search.toString());
+    router.replace(`${p(`/test-cases/${id}`)}?${query.toString()}`);
+  }, [p, router, search]);
+  const prevId = position > 0 ? siblings[position - 1] : undefined;
+  const nextId = position >= 0 && position < siblings.length - 1 ? siblings[position + 1] : undefined;
+
+  const testCase = state.data?.testCase ?? null;
+  const canDecide = !!testCase && testCase.status === "PENDING" && testCase.can.includes("decide");
+  const canEdit = !!testCase?.can.includes("edit");
+
+  const decide = useCallback(async (decision: Decision) => {
+    if (!session || !testCase || busy) return;
+    setBusy(true);
+    setError("");
+    // Pick the next case from the list as it was before the decision (the tab may drop this case).
+    const target = nextId;
+    try {
+      await api.decideCase(session.access_token, testCase.id, decision, testCase.revision);
+      const done = { message: `${DECISION_LABEL[decision]} ${testCase.case_key}`, undoId: testCase.id };
+      if (autoNext && target) {
+        carriedToast = done;
+        go(target);
+      } else {
+        setToast(done);
+        await Promise.all([load(), loadSiblings()]);
+      }
+    } catch (reason) {
+      setError(errorText(reason, "Không lưu được quyết định duyệt."));
+      await load();
+    } finally {
+      setBusy(false);
+    }
+  }, [autoNext, busy, go, load, loadSiblings, nextId, session, testCase]);
+
+  async function undo(id: number) {
+    if (!session) return;
+    try {
+      await api.undoDecision(session.access_token, id);
+      const done = { message: "Đã hoàn tác quyết định." };
+      if (id !== currentId) {
+        carriedToast = done;
+        go(id);
+      } else {
+        setToast(done);
+        await Promise.all([load(), loadSiblings()]);
+      }
+    } catch (reason) {
+      setToast({ message: errorText(reason, "Không hoàn tác được.") });
+    }
+  }
+
+  async function lifecycle(kind: "discard" | "restore") {
+    if (!session || !testCase) return;
+    if (kind === "discard") {
+      const ok = await confirm({
+        title: "Loại bỏ test case?",
+        message: <>Test case <b>{testCase.case_key}</b> sẽ bị ẩn khỏi hàng chờ duyệt. Bạn có thể khôi phục lại từ menu ⋯ khi nó chưa được đưa vào chạy.</>,
+        confirmLabel: "Loại bỏ",
+      });
+      if (!ok) return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      if (kind === "discard") await api.discardCase(session.access_token, testCase.id);
+      else await api.restoreCase(session.access_token, testCase.id);
+      setToast({ message: kind === "discard" ? "Đã loại bỏ test case." : "Đã khôi phục về Chờ duyệt." });
+      await Promise.all([load(), loadSiblings()]);
+    } catch (reason) {
+      setError(errorText(reason, "Không thực hiện được thao tác."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function downloadXosc() {
+    if (!session || !testCase) return;
+    try {
+      downloadBlob(await api.downloadXosc(session.access_token, testCase.id), `${testCase.case_key}-r${testCase.revision}.xosc`);
+    } catch (reason) {
+      setError(errorText(reason, "Không thể tải XOSC."));
+    }
+  }
+
+  // A = phê duyệt, R = không phê duyệt, J / K = sau / trước, E = sửa.
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (shortcutBlocked(event) || editing) return;
+      const key = event.key.toLowerCase();
+      if (key === "a" && canDecide) { event.preventDefault(); void decide("APPROVED"); }
+      else if (key === "r" && canDecide) { event.preventDefault(); void decide("REJECTED"); }
+      else if (key === "j") go(nextId);
+      else if (key === "k") go(prevId);
+      else if (key === "e" && canEdit) { event.preventDefault(); setEditing(true); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canDecide, canEdit, decide, editing, go, nextId, prevId]);
+
+  if (state.loading) return <main className="main"><Loading /></main>;
+  if (!state.data || !testCase)
     return (
       <main className="main">
         <BackLink href={back.href} />{" "}
         <ErrorNotice>{state.error || "Không tìm thấy Test Case."}</ErrorNotice>
       </main>
     );
-  const { testCase, versions } = state.data;
-  const latest = [...versions].sort((a, b) => b.version_no - a.version_no)[0];
+  const { decisions } = state.data;
+  const you = session?.user.id;
+  const who = (id: number | null, name: string | null) => (id === null ? "—" : id === you ? "Bạn" : name ?? `#${id}`);
+
   return (
     <main className="main">
       {pageTitle(
         testCase.title,
         testCase.description ?? "Chưa có mô tả.",
+        <>
+          {canEdit && !editing && <button type="button" className="button" title="Phím tắt: E" onClick={() => setEditing(true)}><Icon name="edit" size={14} />Sửa</button>}
+          <CaseMenu testCase={testCase} busy={busy} onDiscard={() => void lifecycle("discard")} onRestore={() => void lifecycle("restore")} onDownload={() => void downloadXosc()} />
+        </>,
       )}
       <BackLink href={back.href}>{back.label}</BackLink>
-      <section className="detail-grid">
-        <div className="panel">
-          <div className="panel-header">
-            <div>
-              <div className="panel-title">Thông tin logic</div>
-              <div className="panel-subtitle">
-                Mã test case: {testCase.case_key}
-              </div>
-            </div>
-          </div>
-          <dl className="details">
-            <dt>Người tạo</dt>
-            <dd>
-              {testCase.created_by === session?.user.id
-                ? "Bạn"
-                : testCase.created_by}
-            </dd>
-            <dt>Tạo lúc</dt>
-            <dd>{formatDate(testCase.created_at)}</dd>
-            <dt>Cập nhật</dt>
-            <dd>{formatDate(testCase.updated_at)}</dd>
-          </dl>
+      {dialog}
+
+      <section className="review-bar" aria-label="Duyệt nhanh">
+        <div className="review-bar-status">
+          <StatusBadge status={testCase.status} />
+          <span className="session-code">{testCase.case_key}</span>
+          <span className="muted">lần sửa #{testCase.revision}</span>
         </div>
-        <div className="panel">
-          <div className="panel-header">
-            <div>
-              <div className="panel-title">Nguyên tắc versioning</div>
-              <div className="panel-subtitle">
-                Version đã gửi review/approved/rejected là immutable; thay đổi
-                phải clone thành Draft mới.
-              </div>
-            </div>
+        {canDecide && (
+          <div className="review-bar-actions">
+            <button type="button" className="button primary" disabled={busy} title="Phím tắt: A" onClick={() => void decide("APPROVED")}><Icon name="tick" size={14} />Phê duyệt <kbd>A</kbd></button>
+            <button type="button" className="button danger-button" disabled={busy} title="Phím tắt: R" onClick={() => void decide("REJECTED")}><Icon name="x" size={14} />Không phê duyệt <kbd>R</kbd></button>
           </div>
-          <div className="inline-note">
-            Test Suite hiển thị test case có version mới nhất đã được duyệt.
+        )}
+        {!canDecide && testCase.status === "PENDING" && (
+          <span className="muted">{testCase.can.length ? "Bạn không thể tự duyệt test case mình tạo hoặc sửa gần nhất." : "Bạn chỉ có quyền xem."}</span>
+        )}
+        {siblings.length > 0 && (
+          <div className="review-bar-nav">
+            <label className="review-bar-auto"><input type="checkbox" checked={autoNext} onChange={(event) => { setAutoNext(event.target.checked); saveAutoNext(event.target.checked); }} />Tự chuyển tiếp</label>
+            <button type="button" className="button" disabled={!prevId} title="Phím tắt: K" onClick={() => go(prevId)}>← Trước</button>
+            <span className="muted">{position >= 0 ? `${position + 1}/${siblings.length}` : `—/${siblings.length}`}</span>
+            <button type="button" className="button" disabled={!nextId} title="Phím tắt: J" onClick={() => go(nextId)}>Sau →</button>
           </div>
-        </div>
+        )}
       </section>
-      {latest && (
-        <section className="panel">
-          <div className="panel-header">
-            <div>
-              <div className="panel-title">Preview kịch bản · Version {latest.version_no}</div>
-              <div className="panel-subtitle">
-                {latest.map_code} · xe ego {latest.ego_vehicle_code} · tác nhân {latest.adversary_type} · {latest.environment_code}
+      {toast && (
+        <div className="notice notice-info review-toast" role="status">
+          {toast.message}
+          {toast.undoId && <button type="button" className="text-button" onClick={() => void undo(toast.undoId!)}>Hoàn tác</button>}
+        </div>
+      )}
+      {testCase.locked_at && (
+        <div className="notice notice-info">🔒 Đã đưa vào chạy mô phỏng lúc {formatDate(testCase.locked_at)} — khóa chỉnh sửa.</div>
+      )}
+      {testCase.status === "DISCARDED" && (
+        <div className="notice notice-info">Test case đã bị loại bỏ{testCase.can.includes("restore") ? ". Có thể khôi phục từ menu ⋯ góc phải." : "."}</div>
+      )}
+      {error && <ErrorNotice>{error}</ErrorNotice>}
+
+      {editing ? (
+        <CaseEditForm
+          key={testCase.revision}
+          testCase={testCase}
+          onCancel={() => setEditing(false)}
+          onSaved={(message) => { setEditing(false); setToast({ message }); void load(); void loadSiblings(); }}
+        />
+      ) : (
+        <section className="detail-grid">
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <div className="panel-title">Thông tin kịch bản</div>
+                <div className="panel-subtitle">{testCase.map_code} · {testCase.environment_code}</div>
+              </div>
+              <DangerBadge level={testCase.danger_level} />
+            </div>
+            <dl className="details">
+              <dt>Xe ego</dt><dd>{testCase.ego_vehicle_code}</dd>
+              <dt>Tác nhân</dt><dd>{testCase.adversary_type}</dd>
+              <dt>Môi trường</dt><dd>{testCase.environment_code}</dd>
+              <dt>Tags</dt><dd>{testCase.tags.length ? testCase.tags.join(", ") : "—"}</dd>
+            </dl>
+          </div>
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <div className="panel-title">Nguồn gốc</div>
+                <div className="panel-subtitle">
+                  {testCase.builder_session_id
+                    ? <Link className="link" href={p(`/test-case-builder/${testCase.builder_session_id}`)}>Phiên Builder #{testCase.builder_session_id} · biến thể {testCase.builder_variant_no}</Link>
+                    : "Tạo thủ công"}
+                </div>
               </div>
             </div>
-            <Link className="button" href={withFrom(p(`/test-cases/${testCase.id}/versions/${latest.id}`), from)}>Xem version</Link>
+            <dl className="details">
+              <dt>Người tạo</dt><dd>{who(testCase.created_by, testCase.created_by_name)} · {formatDate(testCase.created_at)}</dd>
+              <dt>Sửa gần nhất</dt><dd>{testCase.last_edited_by ? `${who(testCase.last_edited_by, testCase.last_edited_by_name)} · ${formatDate(testCase.last_edited_at)}` : "—"}</dd>
+              <dt>Quyết định</dt><dd>{testCase.decided_by ? `${who(testCase.decided_by, testCase.decided_by_name)} · ${formatDate(testCase.decided_at)}` : "—"}</dd>
+            </dl>
           </div>
-          {latest.xosc_artifact_id ? (
-            <XoscPreview versionId={latest.id} versionNo={latest.version_no} grounding={groundingOf(latest)} />
-          ) : (
-            <div className="inline-note">Version này chưa có tệp .xosc. Mở version để Agent sinh kịch bản.</div>
-          )}
         </section>
       )}
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <div className="panel-title">Preview kịch bản</div>
+            <div className="panel-subtitle">
+              {testCase.map_code} · xe ego {testCase.ego_vehicle_code} · tác nhân {testCase.adversary_type} · {testCase.environment_code}
+            </div>
+          </div>
+        </div>
+        {testCase.xosc_artifact_id ? (
+          <XoscPreview key={testCase.xosc_sha256 ?? testCase.xosc_artifact_id} caseId={testCase.id} fileName={`${testCase.case_key}-r${testCase.revision}.xosc`} grounding={groundingOf(testCase)} />
+        ) : (
+          <div className="inline-note">Test case chưa có tệp .xosc.{canEdit ? " Bấm “Sửa” để tải tệp lên." : ""}</div>
+        )}
+      </section>
+
+      <section className="panel">
+        <div className="panel-header">
+          <div>
+            <div className="panel-title">Lịch sử duyệt</div>
+            <div className="panel-subtitle">Mỗi quyết định ghi lại lần sửa đã được xem.</div>
+          </div>
+        </div>
+        {decisions.length === 0 ? <div className="inline-note">Chưa có quyết định nào.</div> : (
+          <table className="table">
+            <thead><tr><th>Quyết định</th><th>Lần sửa</th><th>Người duyệt</th><th>Thời điểm</th></tr></thead>
+            <tbody>
+              {decisions.map((item) => (
+                <tr key={item.id} className={item.undone_at ? "muted" : ""}>
+                  <td>
+                    <span className={`badge ${item.decision}`}>{DECISION_LABEL[item.decision]}</span>
+                    {item.undone_at && <> · đã hoàn tác</>}
+                    {!item.undone_at && item.revision !== testCase.revision && <> · trước khi sửa</>}
+                  </td>
+                  <td>#{item.revision}</td>
+                  <td>{who(item.decided_by, item.decided_by_name)}</td>
+                  <td>{formatDate(item.created_at)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
       <CaseRunHistory caseId={testCase.id} />
     </main>
   );
 }
 
-export function VersionDetailScreen() {
-  const p = useProjectPath();
-  const { session, can } = useSession();
-  const params = useParams<{ id: string; versionId: string }>();
-  const router = useRouter();
-  const from = safeFrom(useSearchParams().get("from"));
-  const caseHref = withFrom(p(`/test-cases/${params.id}`), from);
-  const [state, setState] = useState<LoadState<TestCaseVersion>>(emptyLoad());
-  const [form, setForm] = useState<VersionPayload>(DEFAULT_VERSION);
-  const [tagsText, setTagsText] = useState("");
-  const [caseInfo, setCaseInfo] = useState<TestCase | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [generating, setGenerating] = useState(false);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
-  const load = useCallback(async () => {
-    if (!session) return;
-    setState((old) => ({ ...old, loading: old.data === null, error: "" }));
-    try {
-      const version = await api.getVersion(
-        session.access_token,
-        params.versionId,
-      );
-      setState({ data: version, loading: false, error: "" });
-      setForm({
-        map_code: version.map_code,
-        ego_vehicle_code: version.ego_vehicle_code,
-        adversary_type: version.adversary_type,
-        environment_code: version.environment_code,
-        danger_level: version.danger_level,
-        scenario_input: version.scenario_input,
-        tag_names: version.tags,
-        change_note: version.change_note,
-      });
-      setTagsText(version.tags.join(", "));
-      api.getCase(session.access_token, params.id).then(setCaseInfo).catch(() => setCaseInfo(null));
-    } catch (reason) {
-      setState({
-        data: null,
-        loading: false,
-        error: errorText(reason, "Không thể tải version."),
-      });
-    }
-  }, [params.id, params.versionId, session]);
-  useEffect(() => {
-    void load();
-  }, [load]);
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    if (!session || !state.data) return;
-    setBusy(true);
-    setError("");
-    try {
-      const payload = { ...form, tag_names: parseTags(tagsText) };
-      const version = await api.updateVersion(
-        session.access_token,
-        state.data.id,
-        payload,
-      );
-      setNotice(`Đã lưu Draft v${version.version_no}.`);
-      await load();
-    } catch (reason) {
-      setError(errorText(reason, "Không thể cập nhật Draft version."));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function generateXosc() {
-    if (!session || !state.data) return;
-    const prompt = (caseInfo?.description || caseInfo?.title || "").trim();
-    if (prompt.length < 3) {
-      setError("Test case chưa có mô tả để Agent sinh kịch bản.");
-      return;
-    }
-    setGenerating(true);
-    setError("");
-    setNotice("");
-    try {
-      const generation = await api.createGeneration(session.access_token, {
-        prompt,
-        catalog_source: "DEFAULT",
-        metadata: { map_code: form.map_code, ego_vehicle_code: form.ego_vehicle_code, adversary_type: form.adversary_type, environment_code: form.environment_code },
-      });
-      await api.acceptGeneration(session.access_token, generation.id, {
-        version_id: state.data.id,
-        map_code: form.map_code,
-        ego_vehicle_code: form.ego_vehicle_code,
-        adversary_type: form.adversary_type,
-        environment_code: form.environment_code,
-        danger_level: form.danger_level,
-        tag_names: parseTags(tagsText),
-        change_note: form.change_note || null,
-      });
-      setNotice("Agent đã sinh tệp .xosc mới cho version này.");
-      await load();
-    } catch (reason) {
-      setError(errorText(reason, "Agent không sinh được kịch bản."));
-    } finally {
-      setGenerating(false);
-    }
-  }
-  async function submitReview() {
-    if (!session || !state.data) return;
-    const message = window.prompt("Lời nhắn gửi Reviewer (không bắt buộc):");
-    if (message === null) return;
-    setBusy(true);
-    setError("");
-    try {
-      await api.submitReview(session.access_token, state.data.id, message);
-      setNotice("Đã gửi version vào hàng đợi review.");
-      await load();
-    } catch (reason) {
-      setError(
-        errorText(
-          reason,
-          "Không thể gửi review. Kiểm tra 5 metadata và XOSC artifact.",
-        ),
-      );
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function clone() {
-    if (!session || !state.data) return;
-    setBusy(true);
-    setError("");
-    try {
-      const next = await api.cloneVersion(session.access_token, state.data.id);
-      router.push(withFrom(p(`/test-cases/${params.id}/versions/${next.id}`), from));
-    } catch (reason) {
-      setError(errorText(reason, "Không thể clone version."));
-    } finally {
-      setBusy(false);
-    }
-  }
-  async function downloadXosc() {
-    if (!session || !state.data) return;
-    setError("");
-    try {
-      downloadBlob(
-        await api.downloadXosc(session.access_token, state.data.id),
-        `scenario-v${state.data.version_no}.xosc`,
-      );
-    } catch (reason) {
-      setError(errorText(reason, "Không thể tải XOSC."));
-    }
-  }
-  if (state.loading)
-    return (
-      <main className="main">
-        <Loading />
-      </main>
-    );
-  if (!state.data)
-    return (
-      <main className="main">
-        <BackLink href={caseHref} />{" "}
-        <ErrorNotice>{state.error || "Không tìm thấy version."}</ErrorNotice>
-      </main>
-    );
-  const version = state.data;
-  const editable =
-    version.status === "DRAFT" && isOwner(version, session?.user.id ?? 0);
-  return (
-    <main className="main">
-      {pageTitle(
-        `Version ${version.version_no}`,
-        "Snapshot metadata của version này. Chỉ bản nháp do chính bạn tạo mới có thể chỉnh sửa.",
-      )}
-      <BackLink href={caseHref}>Chi tiết Test Case</BackLink>
-      {notice && <SuccessNotice>{notice}</SuccessNotice>}
-      {error && <ErrorNotice>{error}</ErrorNotice>}
-      <section className="detail-grid">
-        <div className="panel">
-          <div className="panel-header">
-            <div>
-              <div className="panel-title">Trạng thái review</div>
-              <div className="panel-subtitle">
-                Tạo {formatDate(version.created_at)} · Gửi duyệt{" "}
-                {formatDate(version.submitted_at)}
-              </div>
-            </div>
-            <StatusBadge status={version.status} />
-          </div>
-          <dl className="details">
-            <dt>XOSC artifact</dt>
-            <dd>
-              {version.xosc_artifact_id ? (
-                <button
-                  className="text-button"
-                  onClick={() => void downloadXosc()}
-                >
-                  Tải tệp .xosc
-                </button>
-              ) : (
-                "Chưa upload"
-              )}
-            </dd>
-            <dt>Người quyết định</dt>
-            <dd>{version.decided_by ?? "—"}</dd>
-            <dt>Quy tắc</dt>
-            <dd>Approved/Rejected không chỉnh tại chỗ.</dd>
-          </dl>
-        </div>
-        <div className="panel">
-          <div className="panel-header">
-            <div>
-              <div className="panel-title">Thao tác</div>
-              <div className="panel-subtitle">
-                Backend xác thực quyền và transition trước khi thay đổi.
-              </div>
-            </div>
-          </div>
-          <div className="stack-actions">
-            {editable && (
-              <button
-                className="button primary"
-                disabled={busy || !version.xosc_artifact_id}
-                onClick={() => void submitReview()}
-              >
-                Gửi review
-              </button>
-            )}
-            {version.status !== "DRAFT" &&
-              can("testcase:create") &&
-              isOwner(version, session?.user.id ?? 0) && (
-                <button
-                  className="button"
-                  disabled={busy}
-                  onClick={() => void clone()}
-                >
-                  Clone thành Draft mới
-                </button>
-              )}
-            {editable && (
-              <button className="button" disabled={busy || generating} onClick={() => void generateXosc()}>
-                {generating ? <><span className="spinner" />Agent đang sinh…</> : version.xosc_artifact_id ? "Sinh lại .xosc bằng Agent" : "Sinh .xosc bằng Agent"}
-              </button>
-            )}
-            {editable && !version.xosc_artifact_id && (
-              <span className="muted">
-                Cần có tệp .xosc trước khi gửi review. Agent sinh từ mô tả test case và 5 metadata bên dưới.
-              </span>
-            )}
-          </div>
-        </div>
-      </section>
-      <section className="panel">
-        <div className="panel-header">
-          <div>
-            <div className="panel-title">Preview tệp .xosc</div>
-            <div className="panel-subtitle">Đọc trực tiếp từ tệp OpenSCENARIO đã lưu của version này.</div>
-          </div>
-        </div>
-        {version.xosc_artifact_id ? (
-          <XoscPreview key={version.xosc_artifact_id} versionId={version.id} versionNo={version.version_no} grounding={groundingOf(version)} />
-        ) : (
-          <div className="inline-note">Chưa có tệp .xosc.{editable ? " Bấm “Sinh .xosc bằng Agent” ở trên." : ""}</div>
-        )}
-      </section>
-      <form className="panel form-panel" onSubmit={save}>
-        <div className="panel-header">
-          <div>
-            <div className="panel-title">Metadata version</div>
-            <div className="panel-subtitle">
-              Năm trường này là contract shared cho search/filter và approval
-              workflow.
-            </div>
-          </div>
-        </div>
-        <VersionFields
-          value={form}
-          onChange={setForm}
-          tagsText={tagsText}
-          onTagsChange={setTagsText}
-          disabled={!editable}
-        />
-        {editable && (
-          <div className="form-actions">
-            <button className="button primary" disabled={busy}>
-              {busy ? "Đang lưu…" : "Lưu Draft"}
-            </button>
-          </div>
-        )}
-      </form>
-    </main>
-  );
-}

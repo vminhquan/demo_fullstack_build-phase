@@ -7,13 +7,14 @@ import { useRouter, useSearchParams } from "next/navigation";
 
 import { api, ApiError, TestCase } from "@/lib/api";
 import { buildZip, ZipEntry } from "@/lib/zip";
-import { createSimRun, useSimRuns } from "@/features/simulator-runs/run-store";
+import { useSimulatorRuns } from "@/features/simulator-runs/run-store";
 import { Bridge, useBridges } from "@/features/startup/bridge-store";
 import { labels, useSession } from "@/shared/auth/session-context";
 import { DangerBadge, downloadBlob, Empty, ErrorNotice, formatDate, Loading } from "@/shared/ui/components";
 import { withFrom } from "@/shared/ui/back-target";
 import { useProjectPath } from "@/shared/ui/project-path";
 import { Icon } from "@/shared/ui/icons";
+import { useConfirm } from "@/shared/ui/modal";
 
 const PAGE_SIZE = 20;
 const FILTER_KEYS = ["q", "map_code", "adversary_type", "environment_code", "danger_level", "tag"] as const;
@@ -33,18 +34,19 @@ function toQuery(filters: Filters, page?: number) {
   return query;
 }
 
-/** Test cases whose latest version was approved in the Test Case Builder review flow. */
+/** Approved test cases; putting them into a Simulator Runner run locks them for good. */
 export function ApprovedTestSuiteScreen() {
   const p = useProjectPath();
   const { session } = useSession();
-  const runs = useSimRuns(session?.active_project?.id);
+  const { data: runs } = useSimulatorRuns();
   const { bridges } = useBridges(session?.active_project?.id);
   const [exporting, setExporting] = useState(false);
+  const { confirm, dialog } = useConfirm();
   const [notice, setNotice] = useState("");
   // Number of Simulator Runner runs that include each case.
   const runCounts = useMemo(() => {
     const counts = new Map<number, number>();
-    runs.forEach((run) => new Set(run.cases.map((item) => item.case_id)).forEach((id) => counts.set(id, (counts.get(id) ?? 0) + 1)));
+    (runs ?? []).forEach((run) => new Set(run.test_case_ids).forEach((id) => counts.set(id, (counts.get(id) ?? 0) + 1)));
     return counts;
   }, [runs]);
   const router = useRouter();
@@ -119,13 +121,28 @@ export function ApprovedTestSuiteScreen() {
       return next;
     });
   }
-  function startRun(bridge: Bridge) {
+  async function startRun(bridge: Bridge) {
     const project = session?.active_project;
     if (!session || !project || selected.size === 0) return;
-    const id = createSimRun(project.id, session.user.display_name || session.user.email, [...selected.values()], { id: bridge.connection_uid, name: bridge.name });
-    router.push(p(`/simulator-runs/${id}`));
+    setError("");
+    setNotice("");
+    const ok = await confirm({
+      title: `Chạy ${selected.size} test case trên ${bridge.name}?`,
+      message: "Backend gửi cả phiên chạy xuống Bridge để chạy trên CARLA. Test case đưa vào chạy sẽ bị khóa chỉnh sửa vĩnh viễn.",
+      confirmLabel: "Chạy",
+      tone: "default",
+    });
+    if (!ok) return;
+    try {
+      // The backend locks the approved cases, skips the rest and sends run.assign to the Bridge.
+      const run = await api.createSimulatorRun(session.access_token, bridge.connection_uid, [...selected.keys()]);
+      router.push(p(`/simulator-runs/${run.id}${run.skipped.length ? `?skipped=${run.skipped.length}` : ""}`));
+    } catch (reason) {
+      setError(reason instanceof ApiError ? reason.message : "Không tạo được phiên chạy.");
+      void load();
+    }
   }
-  /** Bundles the .xosc of the latest approved version of every selected case into one ZIP. */
+  /** Bundles the .xosc of every selected case into one ZIP. */
   async function exportXoscZip() {
     if (!session || selected.size === 0) return;
     setExporting(true);
@@ -136,14 +153,13 @@ export function ApprovedTestSuiteScreen() {
     const missing: string[] = [];
     const used = new Set<string>();
     for (const item of selected.values()) {
-      const version = item.latest_version;
-      if (!version?.xosc_artifact_id) {
+      if (!item.xosc_artifact_id) {
         missing.push(item.case_key);
         continue;
       }
       try {
-        const blob = await api.downloadXosc(session.access_token, version.id);
-        let name = `${item.case_key}_v${version.version_no}.xosc`.replace(/[\\/:*?"<>|\s]+/g, "_");
+        const blob = await api.downloadXosc(session.access_token, item.id);
+        let name = `${item.case_key}_r${item.revision}.xosc`.replace(/[\\/:*?"<>|\s]+/g, "_");
         while (used.has(name)) name = name.replace(/\.xosc$/, "_1.xosc");
         used.add(name);
         entries.push({ name, data: new Uint8Array(await blob.arrayBuffer()) });
@@ -168,6 +184,7 @@ export function ApprovedTestSuiteScreen() {
 
   return (
     <main className="main">
+      {dialog}
       <section className="heading">
         <div>
           <h1>Test Suite</h1>
@@ -184,7 +201,7 @@ export function ApprovedTestSuiteScreen() {
             bridges={bridges}
             exporting={exporting}
             startUpHref={p("/start-up")}
-            onRun={startRun}
+            onRun={(bridge) => void startRun(bridge)}
             onExport={() => void exportXoscZip()}
           />
           <button className="button" onClick={() => void load()}>
@@ -216,7 +233,7 @@ export function ApprovedTestSuiteScreen() {
         <div className="panel-header">
           <div>
             <div className="panel-title">{total} test case đã duyệt</div>
-            <div className="panel-subtitle">Mỗi test case hiển thị version đã duyệt gần nhất; version nháp / chờ duyệt mới hơn không làm ẩn test case. Tích chọn rồi bấm “Simulator Runner” để chạy trên một Bridge hoặc tải ZIP .xosc.</div>
+            <div className="panel-subtitle">Chỉ test case Đã phê duyệt. Đưa vào Simulator Runner sẽ khóa chỉnh sửa vĩnh viễn. Tích chọn rồi bấm “Simulator Runner” để chạy trên một Bridge hoặc tải ZIP .xosc.</div>
           </div>
         </div>
         {loading ? (
@@ -242,7 +259,6 @@ export function ApprovedTestSuiteScreen() {
               </thead>
               <tbody>
                 {items.map((item) => {
-                  const version = item.latest_version;
                   return (
                     <tr
                       key={item.id}
@@ -260,24 +276,19 @@ export function ApprovedTestSuiteScreen() {
                         <Link className="case-title link" href={withFrom(p(`/test-cases/${item.id}`), from)} target="_blank" rel="noopener noreferrer">{item.title}</Link>
                         <div className="case-key">
                           {item.case_key}
-                          {version ? ` · v${version.version_no}` : ""}
+                          {item.locked_at && <span title="Đã đưa vào chạy mô phỏng, khóa chỉnh sửa"> · 🔒</span>}
                         </div>
-                        {version && (
-                          <Link className="case-key link" href={withFrom(p(`/test-cases/${item.id}/versions/${version.id}`), from)} target="_blank" rel="noopener noreferrer">
-                            Xem version
-                          </Link>
-                        )}
                       </td>
                       <td>
-                        <div>{version?.map_code ?? "—"}</div>
-                        <div className="muted">{version?.environment_code}</div>
+                        <div>{item.map_code}</div>
+                        <div className="muted">{item.environment_code}</div>
                       </td>
-                      <td>{version?.adversary_type ?? "—"}</td>
-                      <td>{version ? <DangerBadge level={version.danger_level} /> : "—"}</td>
-                      <td>{formatDate(version?.decided_at ?? null)}</td>
+                      <td>{item.adversary_type}</td>
+                      <td><DangerBadge level={item.danger_level} /></td>
+                      <td>{formatDate(item.decided_at)}</td>
                       <td>{runCounts.get(item.id) ? <strong>{runCounts.get(item.id)} phiên</strong> : <span className="muted">Chưa chạy</span>}</td>
                       <td>
-                        {version?.tags.map((tag) => (
+                        {item.tags.map((tag) => (
                           <span className="tag" key={tag}>{tag}</span>
                         ))}
                       </td>

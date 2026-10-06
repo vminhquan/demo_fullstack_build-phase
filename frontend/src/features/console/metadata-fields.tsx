@@ -4,7 +4,7 @@ import { useProjectPath } from "@/shared/ui/project-path";
 import Link from "next/link";
 import { ReactNode, useEffect, useMemo, useState } from "react";
 
-import { api, ApiError, CatalogSnapshot, MetadataOptions, VersionPayload } from "@/lib/api";
+import { api, ApiError, CaseMetadata, CatalogSnapshot, MetadataOptions } from "@/lib/api";
 import { labels, useSession } from "@/shared/auth/session-context";
 
 type Scope = "all" | number;
@@ -16,7 +16,7 @@ function originLabel(item: CatalogSnapshot) {
   return item.source === "WORKER" ? "Đồng bộ qua worker" : `Import${item.label && item.label !== item.map_name ? ` · ${item.label}` : ""}`;
 }
 
-/** A select whose current value stays visible even when it is not in the CARLA data (older versions). */
+/** A select whose current value stays visible even when it is not in the CARLA data (older cases). */
 function OptionSelect({
   label, value, onChange, disabled, placeholder, groups, help,
 }: {
@@ -49,8 +49,8 @@ function OptionSelect({
   );
 }
 
-/** The 5 required version metadata. Choices come from the CARLA catalogs (defaults, imports, Worker syncs). */
-export function VersionFields({
+/** The 5 required test case metadata. Choices come from the CARLA catalogs (defaults, imports, Worker syncs). */
+export function MetadataFields({
   value,
   onChange,
   tagsText,
@@ -59,8 +59,8 @@ export function VersionFields({
   catalogSnapshotId = null,
   hideMap = false,
 }: {
-  value: VersionPayload;
-  onChange: (value: VersionPayload) => void;
+  value: CaseMetadata;
+  onChange: (value: CaseMetadata) => void;
   tagsText: string;
   onTagsChange: (value: string) => void;
   disabled?: boolean;
@@ -104,12 +104,12 @@ export function VersionFields({
     };
   }, [options, scope]);
 
-  const patch = (key: keyof VersionPayload, next: string) => onChange({ ...value, [key]: next });
+  const patch = (key: keyof CaseMetadata, next: string) => onChange({ ...value, [key]: next });
   const noCatalog = options !== null && options.snapshots.length === 0;
 
   return (
     <div className="form form-columns metadata-form">
-      <div className="section-label field-full">{hideMap ? "Metadata của version" : "5 metadata bắt buộc của version"}</div>
+      <div className="section-label field-full">{hideMap ? "Metadata của test case" : "5 metadata bắt buộc của test case"}</div>
       {error && <div className="notice notice-error field-full">{error}</div>}
 
       {noCatalog || error ? (
@@ -197,10 +197,6 @@ export function VersionFields({
       <label className="field">
         Thẻ (cách nhau bởi dấu phẩy)
         <input disabled={disabled} value={tagsText} onChange={(event) => onTagsChange(event.target.value)} placeholder="pedestrian, crossing, rain" />
-      </label>
-      <label className="field field-full">
-        Ghi chú thay đổi
-        <textarea disabled={disabled} value={value.change_note ?? ""} onChange={(event) => patch("change_note", event.target.value)} placeholder="Lý do tạo hoặc sửa version này" />
       </label>
     </div>
   );

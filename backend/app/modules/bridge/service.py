@@ -27,6 +27,19 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
+# The Bridge sends a heartbeat every 15 s; three missed beats means the process holding it is gone.
+ONLINE_WINDOW = timedelta(seconds=45)
+
+
+def bridge_online(bridge: Bridge) -> bool:
+    """Online in any backend process: a process holds its socket and heard from it recently."""
+    from app.modules.bridge.hub import hub
+
+    if hub.is_local(bridge.id):
+        return True
+    return bool(bridge.online_since and bridge.last_seen_at and now() - bridge.last_seen_at < ONLINE_WINDOW)
+
+
 def new_code() -> str:
     return f"{secrets.randbelow(10**CODE_DIGITS):0{CODE_DIGITS}d}"
 

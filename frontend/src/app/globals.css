@@ -359,8 +359,8 @@ a.case-key { display: inline-block; color: var(--blue); }
   content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .9;
 }
 .badge.APPROVED, .badge.ACTIVE, .state-active, .run-status.COMPLETED, .verdict.PASS { background: var(--green-soft); color: var(--green); }
-.badge.DRAFT, .run-status.QUEUED, .run-status.CLAIMED, .run-status.CANCELLED, .badge.ARCHIVED { background: var(--bg-hover); color: var(--muted); }
-.badge.IN_REVIEW, .run-status.RUNNING { background: var(--blue-soft); color: var(--blue); }
+.badge.DRAFT, .badge.DISCARDED, .run-status.QUEUED, .run-status.CLAIMED, .run-status.CANCELLED, .badge.ARCHIVED { background: var(--bg-hover); color: var(--muted); }
+.badge.IN_REVIEW, .badge.PENDING, .run-status.RUNNING { background: var(--blue-soft); color: var(--blue); }
 .badge.EDIT, .badge.SUSPENDED { background: var(--amber-soft); color: var(--amber); }
 .badge.REJECTED, .state-inactive, .run-status.FAILED, .verdict.FAIL, .verdict.ERROR { background: var(--red-soft); color: var(--red); }
 .danger-LOW { background: var(--green-soft); color: var(--green); }
@@ -875,6 +875,22 @@ a.case-key { display: inline-block; color: var(--blue); }
 .session-scenario .spinner { margin-right: 6px; }
 .session-scenario-actions { display: flex; flex: 0 0 auto; align-items: center; gap: 4px; }
 .session-scenario-actions .badge { margin-left: 4px; }
+.session-scenario.is-selected { background: var(--blue-soft); }
+.session-scenario-main { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.session-select { margin-top: 3px; }
+.session-bulk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--border); background: var(--bg-subtle); }
+.session-bulk-all { display: inline-flex; align-items: center; gap: 8px; margin-right: auto; color: var(--muted); font-size: 13px; }
+.session-notice, .review-toast { display: flex; align-items: center; gap: 12px; }
+/* Quick review on the test case detail page: stays visible while scrolling the preview. */
+.review-bar {
+  position: sticky; top: calc(var(--topbar-h) + 8px); z-index: 4; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px;
+  margin: 12px 0; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg); box-shadow: var(--shadow-md);
+}
+.review-bar-status { display: flex; align-items: center; gap: 8px; }
+.review-bar-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.review-bar-nav { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.review-bar-auto { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 13px; }
+.review-bar kbd { margin-left: 4px; padding: 0 5px; border: 1px solid currentColor; border-radius: 4px; font-size: 11px; opacity: .7; }
 .icon-button.session-approve { color: var(--green); }
 .icon-button.session-approve:hover:not(:disabled) { background: var(--green-soft); color: var(--green); }
 .icon-button.session-reject { color: var(--muted); }

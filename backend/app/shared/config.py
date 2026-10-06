@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     llm_price_input_per_mtok: float = 0.15
     llm_price_output_per_mtok: float = 0.60
     max_catalog_upload_bytes: int = 50 * 1024 * 1024
+    # Simulator Runner over the Bridge: per test case limit sent in run.assign; a RUNNING case with no result
+    # after timeout + 60 s is failed with TIMEOUT.
+    bridge_job_timeout_seconds: int = 300
 
     @field_validator("database_url")
     @classmethod

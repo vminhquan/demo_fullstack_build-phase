@@ -11,7 +11,7 @@ from app.modules.odd.service import get_odd
 from app.modules.report.service import build_report
 from app.shared.config import get_settings
 from app.shared.infrastructure.db import get_session
-from app.shared.infrastructure.models import AgentCall, ScenarioGeneration, TestCaseVersion
+from app.shared.infrastructure.models import AgentCall, ScenarioGeneration, TestCase
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -31,10 +31,10 @@ async def generation_report(
         select(ScenarioGeneration).where(ScenarioGeneration.project_id == actor.project_id, ScenarioGeneration.created_at >= since)
     )).all()
     versions = (await session.scalars(
-        select(TestCaseVersion).where(
-            TestCaseVersion.project_id == actor.project_id,
-            TestCaseVersion.created_at >= since,
-            TestCaseVersion.scenario_input["source"].astext == "AGENT",
+        select(TestCase).where(
+            TestCase.project_id == actor.project_id,
+            TestCase.created_at >= since,
+            TestCase.scenario_input["source"].astext == "AGENT",
         )
     )).all()
     odd = await get_odd(session, actor.project_id)

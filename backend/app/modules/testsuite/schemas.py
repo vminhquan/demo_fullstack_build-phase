@@ -15,15 +15,15 @@ class SuiteUpdate(BaseModel):
 
 
 class AddSuiteItem(BaseModel):
-    test_case_version_id: int
+    test_case_id: int
 
 
 class ReorderItems(BaseModel):
-    version_ids: list[int]
+    test_case_ids: list[int]
 
 
 class SuiteItemResponse(BaseModel):
-    test_case_version_id: int
+    test_case_id: int
     position: int
     added_by: int
     added_at: datetime
@@ -41,7 +41,7 @@ class SuiteResponse(BaseModel):
 
 class SuiteRunResponse(BaseModel):
     id: int
-    suite_id: int
+    suite_id: int | None
     status: SuiteRunStatus
     total_jobs: int
     completed_jobs: int
@@ -52,7 +52,7 @@ class SuiteRunResponse(BaseModel):
 
 class RunJobSummary(BaseModel):
     id: int
-    test_case_version_id: int
+    test_case_id: int
     status: RunJobStatus
     attempt: int
     error_code: str | None

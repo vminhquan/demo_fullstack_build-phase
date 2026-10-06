@@ -74,10 +74,14 @@ class ProjectStatus(str, enum.Enum):
     ARCHIVED = "ARCHIVED"
 
 
-class VersionStatus(str, enum.Enum):
-    DRAFT = "DRAFT"
-    IN_REVIEW = "IN_REVIEW"
-    EDIT = "EDIT"
+class TestCaseStatus(str, enum.Enum):
+    PENDING = "PENDING"      # waiting for a reviewer (new, or edited since the last decision)
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"    # a reviewer looked at it and declined
+    DISCARDED = "DISCARDED"  # the creator removed it before review (restorable while unlocked)
+
+
+class TestCaseDecisionValue(str, enum.Enum):
     APPROVED = "APPROVED"
     REJECTED = "REJECTED"
 
@@ -87,17 +91,6 @@ class DangerLevel(str, enum.Enum):
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
-
-
-class ReviewDecision(str, enum.Enum):
-    APPROVED = "APPROVED"
-    EDIT = "EDIT"
-    REJECTED = "REJECTED"
-
-
-class CommentType(str, enum.Enum):
-    COMMENT = "COMMENT"
-    DECISION = "DECISION"
 
 
 class SuiteRunStatus(str, enum.Enum):
@@ -333,10 +326,18 @@ class Artifact(IdTimestampMixin, Base):
 
 
 class TestCase(IdTimestampMixin, TimestampMixin, Base):
+    """One scenario: generated once by the Agent (or written by hand), edited in place, no versions.
+
+    Editing moves it back to PENDING; once it is put into a simulator run (`locked_at`) it never changes again.
+    """
+
     __tablename__ = "test_cases"
     __table_args__ = (
         UniqueConstraint("project_id", "case_key", name="uq_test_case_project_key"),
         Index("idx_test_cases_project_updated", "project_id", "updated_at"),
+        Index("idx_test_cases_project_status", "project_id", "status"),
+        Index("idx_test_cases_project_map", "project_id", "map_code"),
+        Index("idx_test_cases_project_danger", "project_id", "danger_level"),
     )
 
     project_id: Mapped[int] = mapped_column(
@@ -345,37 +346,8 @@ class TestCase(IdTimestampMixin, TimestampMixin, Base):
     case_key: Mapped[str] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(300))
     description: Mapped[str | None] = mapped_column(Text)
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    # Test Case Builder session that generated this case (NULL for cases created another way).
-    builder_session_id: Mapped[int | None] = mapped_column(
-        ForeignKey("builder_sessions.id", ondelete="SET NULL"), index=True
-    )
-    # Position of the case in its builder session (1..target_count).
-    builder_variant_no: Mapped[int | None] = mapped_column(Integer)
-    versions: Mapped[list[TestCaseVersion]] = relationship(
-        back_populates="test_case",
-        cascade="all, delete-orphan",
-        order_by="TestCaseVersion.version_no",
-    )
-
-
-class TestCaseVersion(IdTimestampMixin, Base):
-    __tablename__ = "test_case_versions"
-    __table_args__ = (
-        UniqueConstraint("test_case_id", "version_no", name="uq_test_case_version_no"),
-        Index("idx_tcv_project_map", "project_id", "map_code"),
-        Index("idx_tcv_project_status", "project_id", "status"),
-        Index("idx_tcv_project_danger", "project_id", "danger_level"),
-    )
-
-    project_id: Mapped[int] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True
-    )
-    test_case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id", ondelete="CASCADE"))
-    version_no: Mapped[int] = mapped_column(Integer)
-    status: Mapped[VersionStatus] = mapped_column(
-        Enum(VersionStatus, name="version_status"), default=VersionStatus.DRAFT
+    status: Mapped[TestCaseStatus] = mapped_column(
+        Enum(TestCaseStatus, name="test_case_status"), default=TestCaseStatus.PENDING
     )
     map_code: Mapped[str] = mapped_column(String(120))
     ego_vehicle_code: Mapped[str] = mapped_column(String(255))
@@ -386,20 +358,49 @@ class TestCaseVersion(IdTimestampMixin, Base):
         JSONB, default=dict, server_default="{}"
     )
     xosc_artifact_id: Mapped[int | None] = mapped_column(ForeignKey("artifacts.id"))
-    # CARLA data the XOSC was generated against (NULL for hand-written versions).
+    # Copy of the artifact hash so listings and config hashes never load the XOSC bytes.
+    xosc_sha256: Mapped[str | None] = mapped_column(String(64))
+    # CARLA data the XOSC was generated against (NULL for hand-written cases).
     catalog_snapshot_id: Mapped[int | None] = mapped_column(
-        ForeignKey("carla_catalog_snapshots.id", name="fk_tcv_catalog_snapshot")
+        ForeignKey("carla_catalog_snapshots.id", name="fk_test_case_catalog_snapshot")
     )
-    change_note: Mapped[str | None] = mapped_column(Text)
-    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Bumped on every edit; runs and decisions record the revision they saw.
+    revision: Mapped[int] = mapped_column(BigInteger, default=1, server_default="1")
+    # sha256 of the editable configuration + XOSC; compared by decisions, runs and the Bridge.
+    config_sha256: Mapped[str] = mapped_column(String(64), default="", server_default="")
+    created_by: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    last_edited_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
+    last_edited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     decided_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
-    test_case: Mapped[TestCase] = relationship(back_populates="versions")
-    xosc_artifact: Mapped[Artifact | None] = relationship(foreign_keys=[xosc_artifact_id])
-    tags: Mapped[list[Tag]] = relationship(
-        secondary="test_case_version_tags", lazy="selectin"
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    discarded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set when the case is first put into a simulator run; it is read-only from then on.
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Test Case Builder session that generated this case (NULL for cases created another way).
+    builder_session_id: Mapped[int | None] = mapped_column(
+        ForeignKey("builder_sessions.id", ondelete="SET NULL"), index=True
     )
+    # Position of the case in its builder session (1..target_count).
+    builder_variant_no: Mapped[int | None] = mapped_column(Integer)
+    xosc_artifact: Mapped[Artifact | None] = relationship(foreign_keys=[xosc_artifact_id])
+    tags: Mapped[list[Tag]] = relationship(secondary="test_case_tags", lazy="selectin")
+
+
+class TestCaseDecision(IdTimestampMixin, Base):
+    """Every approve/reject; a case edited and reviewed again gets one row per decision."""
+
+    __tablename__ = "test_case_decisions"
+    __table_args__ = (Index("idx_tc_decisions_project_created", "project_id", "created_at"),)
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    test_case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id", ondelete="CASCADE"), index=True)
+    decision: Mapped[TestCaseDecisionValue] = mapped_column(Enum(TestCaseDecisionValue, name="test_case_decision"))
+    revision: Mapped[int] = mapped_column(BigInteger)
+    config_sha256: Mapped[str] = mapped_column(String(64))
+    decided_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # Set when the reviewer clicked "Hoàn tác" right after deciding; the case went back to PENDING.
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class CarlaCatalogSnapshot(IdTimestampMixin, Base):
@@ -459,7 +460,7 @@ class ScenarioGeneration(IdTimestampMixin, Base):
     result: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     xosc: Mapped[str] = mapped_column(Text, deferred=True)
     xosc_sha256: Mapped[str] = mapped_column(String(64))
-    accepted_version_id: Mapped[int | None] = mapped_column(ForeignKey("test_case_versions.id"))
+    accepted_test_case_id: Mapped[int | None] = mapped_column(ForeignKey("test_cases.id"))
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     # sha256 of (prompt, catalog content hash, constraints, seed, auto_repair): identical requests reuse the result.
     request_hash: Mapped[str | None] = mapped_column(String(64), index=True)
@@ -526,13 +527,13 @@ class Tag(IdTimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(120))
 
 
-test_case_version_tags = Table(
-    "test_case_version_tags",
+test_case_tags = Table(
+    "test_case_tags",
     Base.metadata,
     Column(
-        "version_id",
+        "test_case_id",
         BigInteger,
-        ForeignKey("test_case_versions.id", ondelete="CASCADE"),
+        ForeignKey("test_cases.id", ondelete="CASCADE"),
         primary_key=True,
     ),
     Column(
@@ -542,47 +543,6 @@ test_case_version_tags = Table(
         primary_key=True,
     ),
 )
-
-
-class ReviewRequest(IdTimestampMixin, Base):
-    __tablename__ = "review_requests"
-
-    project_id: Mapped[int] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True
-    )
-    version_id: Mapped[int] = mapped_column(ForeignKey("test_case_versions.id"), unique=True)
-    requested_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    requested_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    resolved_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
-    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    decision: Mapped[ReviewDecision | None] = mapped_column(
-        Enum(ReviewDecision, name="review_decision")
-    )
-    comments: Mapped[list[ReviewComment]] = relationship(
-        back_populates="review_request", cascade="all, delete-orphan"
-    )
-
-
-class ReviewComment(IdTimestampMixin, Base):
-    __tablename__ = "review_comments"
-    __table_args__ = (
-        CheckConstraint("length(trim(body)) > 0", name="ck_review_comment_nonempty"),
-    )
-
-    project_id: Mapped[int] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True
-    )
-    review_request_id: Mapped[int] = mapped_column(
-        ForeignKey("review_requests.id", ondelete="CASCADE")
-    )
-    creator_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
-    body: Mapped[str] = mapped_column(Text)
-    comment_type: Mapped[CommentType] = mapped_column(
-        Enum(CommentType, name="comment_type"), default=CommentType.COMMENT
-    )
-    review_request: Mapped[ReviewRequest] = relationship(back_populates="comments")
 
 
 class TestSuite(IdTimestampMixin, TimestampMixin, Base):
@@ -611,14 +571,14 @@ class TestSuiteItem(Base):
     suite_id: Mapped[int] = mapped_column(
         ForeignKey("test_suites.id", ondelete="CASCADE"), primary_key=True
     )
-    test_case_version_id: Mapped[int] = mapped_column(
-        ForeignKey("test_case_versions.id"), primary_key=True
+    test_case_id: Mapped[int] = mapped_column(
+        ForeignKey("test_cases.id"), primary_key=True
     )
     position: Mapped[int] = mapped_column(Integer, default=0)
     added_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     suite: Mapped[TestSuite] = relationship(back_populates="items")
-    version: Mapped[TestCaseVersion] = relationship()
+    test_case: Mapped[TestCase] = relationship()
 
 
 class TestSuiteRun(IdTimestampMixin, Base):
@@ -627,11 +587,19 @@ class TestSuiteRun(IdTimestampMixin, Base):
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
-    suite_id: Mapped[int] = mapped_column(ForeignKey("test_suites.id"))
+    # NULL for Simulator Runner runs, which take any approved test cases rather than a saved suite.
+    suite_id: Mapped[int | None] = mapped_column(ForeignKey("test_suites.id"))
     requested_by: Mapped[int] = mapped_column(ForeignKey("users.id"))
     status: Mapped[SuiteRunStatus] = mapped_column(
         Enum(SuiteRunStatus, name="suite_run_status"), default=SuiteRunStatus.QUEUED
     )
+    # Bridge that executes the run (Simulator Runner); NULL = legacy worker queue.
+    bridge_connection_id: Mapped[int | None] = mapped_column(
+        ForeignKey("bridge_connections.id", ondelete="SET NULL"), index=True
+    )
+    # Last time run.assign was sent, and when the Bridge confirmed it with run.accepted.
+    dispatched_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     total_jobs: Mapped[int] = mapped_column(Integer, default=0)
     completed_jobs: Mapped[int] = mapped_column(Integer, default=0)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -654,7 +622,7 @@ class RunJob(IdTimestampMixin, Base):
     suite_run_id: Mapped[int | None] = mapped_column(
         ForeignKey("test_suite_runs.id", ondelete="CASCADE")
     )
-    test_case_version_id: Mapped[int] = mapped_column(ForeignKey("test_case_versions.id"))
+    test_case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id"))
     status: Mapped[RunJobStatus] = mapped_column(
         Enum(RunJobStatus, name="run_job_status"), default=RunJobStatus.QUEUED
     )
@@ -669,7 +637,7 @@ class RunJob(IdTimestampMixin, Base):
     error_code: Mapped[str | None] = mapped_column(String(120))
     error_message: Mapped[str | None] = mapped_column(Text)
     suite_run: Mapped[TestSuiteRun | None] = relationship(back_populates="jobs")
-    version: Mapped[TestCaseVersion] = relationship()
+    test_case: Mapped[TestCase] = relationship()
     result: Mapped[RunResult | None] = relationship(
         back_populates="run_job", uselist=False, cascade="all, delete-orphan"
     )
@@ -684,7 +652,11 @@ class RunResult(IdTimestampMixin, Base):
     run_job_id: Mapped[int] = mapped_column(
         ForeignKey("run_jobs.id", ondelete="CASCADE"), unique=True
     )
-    test_case_version_id: Mapped[int] = mapped_column(ForeignKey("test_case_versions.id"))
+    test_case_id: Mapped[int] = mapped_column(ForeignKey("test_cases.id"))
+    # Configuration the run actually executed (the case is locked by then, so these equal its current values).
+    revision: Mapped[int | None] = mapped_column(BigInteger)
+    config_sha256: Mapped[str | None] = mapped_column(String(64))
+    xosc_sha256: Mapped[str | None] = mapped_column(String(64))
     verdict: Mapped[RunVerdict] = mapped_column(Enum(RunVerdict, name="run_verdict"))
     metrics: Mapped[dict[str, Any]] = mapped_column(JSONB, default=dict, server_default="{}")
     scenario_runner_exit_code: Mapped[int | None] = mapped_column(Integer)
@@ -759,8 +731,8 @@ class TestCaseSearchDocument(Base):
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
-    version_id: Mapped[int] = mapped_column(
-        ForeignKey("test_case_versions.id", ondelete="CASCADE"), unique=True
+    test_case_id: Mapped[int] = mapped_column(
+        ForeignKey("test_cases.id", ondelete="CASCADE"), unique=True
     )
     search_text: Mapped[str] = mapped_column(Text)
     embedding_model: Mapped[str | None] = mapped_column(String(255))
@@ -792,6 +764,8 @@ class Bridge(IdTimestampMixin, Base):
     # Last CARLA port probe reported by the Bridge (None = never reported).
     carla_reachable: Mapped[bool | None] = mapped_column(Boolean)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Set while a backend process holds the Bridge socket; with last_seen_at it tells every process it is online.
+    online_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 

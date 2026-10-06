@@ -54,7 +54,7 @@ def danger_level(threat_score: dict[str, Any], scenario_ir: dict[str, Any]) -> D
     return level
 
 
-def suggested_version(result: dict[str, Any]) -> dict[str, Any]:
+def suggested_metadata(result: dict[str, Any]) -> dict[str, Any]:
     ir = result["scenario_ir"]
     grounding = result.get("grounding") or {}
     tags = ["ai-generated", str(ir.get("ego", {}).get("road_type", "")).replace("_", "-")]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import secrets
 from contextlib import asynccontextmanager
 
@@ -9,7 +10,10 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.exc import IntegrityError
 
 from app.modules.audit.router import router as audit_router
+from app.modules.bridge.hub import hub
 from app.modules.bridge.router import public_router as bridge_public_router
+from app.modules.bridge.runs import maintenance_loop
+from app.modules.bridge.runs_router import router as simulator_runs_router
 from app.modules.bridge.router import router as bridge_router
 from app.modules.builder.router import router as builder_router
 from app.modules.builder.service import fail_interrupted_sessions
@@ -23,11 +27,10 @@ from app.modules.odd.router import router as odd_router
 from app.modules.report.router import router as report_router
 from app.modules.identity.router import router as auth_router
 from app.modules.project.router import router as project_router
-from app.modules.review.router import router as review_router
 from app.modules.search.router import router as rag_search_router
 from app.modules.storage.router import router as storage_router
 from app.modules.testcase.router import router as testcase_router
-from app.modules.testcase.router import versions_router
+from app.modules.testcase.router import decisions_router
 from app.modules.testsuite.router import router as testsuite_router
 from app.modules.testsuite.router import suite_runs_router
 from app.shared.config import get_settings
@@ -44,7 +47,12 @@ async def lifespan(_: FastAPI):
         await fail_interrupted_sessions()
     except Exception:  # noqa: BLE001 - e.g. migrations not applied yet; never block startup
         pass
+    # Relay between backend processes (Bridge sockets, live page events) and Simulator Runner upkeep.
+    await hub.start(settings.database_url)
+    maintenance = asyncio.create_task(maintenance_loop())
     yield
+    maintenance.cancel()
+    await hub.stop()
 
 
 app = FastAPI(title="Scenario Forge Flow B API", version="1.0.0", lifespan=lifespan)
@@ -91,9 +99,9 @@ for router in (auth_router, project_router, execution_worker_router, bridge_publ
 
 # Everything else belongs to one project: /api/v1/projects/{project_id}/…
 PROJECT_SCOPED_ROUTERS = (
-    testcase_router, versions_router, review_router, rag_search_router, testsuite_router, suite_runs_router,
+    testcase_router, decisions_router, rag_search_router, testsuite_router, suite_runs_router,
     execution_router, storage_router, audit_router, dashboard_router, catalog_router, generation_router,
-    odd_router, report_router, builder_router, bridge_router,
+    odd_router, report_router, builder_router, bridge_router, simulator_runs_router,
 )
 for router in PROJECT_SCOPED_ROUTERS:
     app.include_router(router, prefix=f"{settings.api_prefix}/projects/{{project_id}}", dependencies=[Depends(project_path_param)])

@@ -3,10 +3,10 @@
 import Link from "next/link";
 import { ReactNode } from "react";
 
-import { DangerLevel, VersionStatus } from "@/lib/api";
+import { DangerLevel, TestCaseStatus } from "@/lib/api";
 import { labels } from "@/shared/auth/session-context";
 
-export function StatusBadge({ status }: { status: VersionStatus }) { return <span className={`badge ${status}`}>{labels.status[status]}</span>; }
+export function StatusBadge({ status }: { status: TestCaseStatus }) { return <span className={`badge ${status}`}>{labels.status[status]}</span>; }
 export function DangerBadge({ level }: { level: DangerLevel }) { return <span className={`danger danger-${level}`}>{labels.danger[level]}</span>; }
 export function ErrorNotice({ children }: { children: ReactNode }) { return <div className="notice notice-error">{children}</div>; }
 export function SuccessNotice({ children }: { children: ReactNode }) { return <div className="notice notice-success">{children}</div>; }

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 
-import { api, ApiError, BuilderError, BuilderSession, BuilderSessionCreate, BuilderSessionDetail, BuilderSessionStatus, TestCase } from "@/lib/api";
+import { api, ApiError, BatchItemResult, BuilderError, BuilderSession, BuilderSessionCreate, BuilderSessionDetail, BuilderSessionStatus, Decision, TestCase } from "@/lib/api";
 import { useSession } from "@/shared/auth/session-context";
 import { BackLink, DangerBadge, Empty, ErrorNotice, formatDate, Loading } from "@/shared/ui/components";
 import { withFrom } from "@/shared/ui/back-target";
@@ -15,16 +15,31 @@ import { SessionInputForm, SessionInputView } from "./composer";
 
 const POLL_MS = 4000;
 
-type ScenarioStatus = "GENERATING" | "PENDING" | "APPROVED" | "REJECTED" | "FAILED";
+type ScenarioStatus = "GENERATING" | "PENDING" | "APPROVED" | "REJECTED" | "DISCARDED" | "FAILED";
 const scenarioStatusLabel: Record<ScenarioStatus, string> = {
   GENERATING: "Đang sinh",
   PENDING: "Chờ duyệt",
   APPROVED: "Đã duyệt",
-  REJECTED: "Từ chối",
+  REJECTED: "Không phê duyệt",
+  DISCARDED: "Đã loại bỏ",
   FAILED: "Sinh lỗi",
 };
-// Reuse the version badge palette: grey = generating, blue = waiting, green = approved, red = rejected/failed.
-const SCENARIO_BADGE: Record<ScenarioStatus, string> = { GENERATING: "DRAFT", PENDING: "IN_REVIEW", APPROVED: "APPROVED", REJECTED: "REJECTED", FAILED: "REJECTED" };
+// Badge palette: grey = generating/discarded, blue = waiting, green = approved, red = rejected/failed.
+const SCENARIO_BADGE: Record<ScenarioStatus, string> = { GENERATING: "DRAFT", PENDING: "PENDING", APPROVED: "APPROVED", REJECTED: "REJECTED", DISCARDED: "DISCARDED", FAILED: "REJECTED" };
+const BATCH_ERRORS: Record<string, string> = {
+  NOT_PENDING: "không còn chờ duyệt",
+  NOT_FOUND: "không tìm thấy",
+  FORBIDDEN: "không đủ quyền (tự duyệt / không phải người tạo)",
+  TEST_CASE_LOCKED: "đã đưa vào chạy",
+};
+
+/** "Đã phê duyệt 8 · bỏ qua 2 (…)" from a batch response. */
+function batchSummary(verb: string, results: BatchItemResult[]) {
+  const done = results.filter((item) => !item.error).length;
+  const skipped = results.filter((item) => item.error);
+  const reasons = [...new Set(skipped.map((item) => BATCH_ERRORS[item.error ?? ""] ?? item.message ?? item.error))].join("; ");
+  return `${verb} ${done}${skipped.length ? ` · bỏ qua ${skipped.length} (${reasons})` : ""}`;
+}
 const sessionStatusLabel: Record<BuilderSessionStatus, string> = {
   GENERATING: "Đang sinh",
   COMPLETED: "Hoàn tất",
@@ -179,11 +194,7 @@ function scenarioItems(detail: BuilderSessionDetail): ScenarioItem[] {
     const no = index + 1;
     const plannedMap = detail.maps[index % Math.max(detail.maps.length, 1)]?.map_code ?? "";
     const testCase = detail.test_cases.find((item) => item.builder_variant_no === no);
-    if (testCase) {
-      const version = testCase.latest_version;
-      const status: ScenarioStatus = version?.status === "APPROVED" ? "APPROVED" : version?.status === "REJECTED" ? "REJECTED" : "PENDING";
-      return { no, map_code: version?.map_code ?? plannedMap, status, testCase };
-    }
+    if (testCase) return { no, map_code: testCase.map_code, status: testCase.status, testCase };
     const error = detail.errors.find((item) => item.variant_no === no);
     if (error) return { no, map_code: error.map_code, status: "FAILED", error };
     return {
@@ -197,26 +208,25 @@ function scenarioItems(detail: BuilderSessionDetail): ScenarioItem[] {
 
 type QueueFilter = "ALL" | ScenarioStatus;
 
-function ScenarioRow({ sessionId, item, canDecide, onDecided }: { sessionId: number; item: ScenarioItem; canDecide: boolean; onDecided: () => void }) {
+function ScenarioRow({ sessionId, item, filter, selected, onToggle, onDecided }: {
+  sessionId: number; item: ScenarioItem; filter: QueueFilter; selected: boolean; onToggle: () => void;
+  onDecided: (message: string, undo?: { id: number; title: string }) => void;
+}) {
   const p = useProjectPath();
   const { session } = useSession();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
-  const version = item.testCase?.latest_version;
+  const testCase = item.testCase;
+  const canDecide = !!testCase?.can.includes("decide");
+  const selectable = !!testCase && (canDecide || testCase.can.includes("discard"));
 
-  // Records the decision through the normal review flow, so /test-suite and the review history stay in sync.
-  async function decide(decision: "APPROVED" | "REJECTED") {
-    if (!session || !version) return;
+  async function decide(decision: Decision) {
+    if (!session || !testCase) return;
     setBusy(true);
     setError("");
     try {
-      let reviewId: number | undefined;
-      if (version.status === "IN_REVIEW") {
-        reviewId = (await api.listReviews(session.access_token)).find((review) => review.version_id === version.id)?.id;
-      }
-      if (!reviewId) reviewId = (await api.submitReview(session.access_token, version.id, "Gửi duyệt từ Test Case Builder.")).id;
-      await api.decideReview(session.access_token, reviewId, decision, decision === "REJECTED" ? "Từ chối trong Test Case Builder." : "");
-      onDecided();
+      await api.decideCase(session.access_token, testCase.id, decision, testCase.revision);
+      onDecided(`${decision === "APPROVED" ? "Đã phê duyệt" : "Không phê duyệt"} ${testCase.case_key}`, { id: testCase.id, title: testCase.case_key });
     } catch (reason) {
       setError(errorText(reason, "Không lưu được quyết định duyệt."));
     } finally {
@@ -224,24 +234,30 @@ function ScenarioRow({ sessionId, item, canDecide, onDecided }: { sessionId: num
     }
   }
 
-  const title = item.testCase?.title ?? `Biến thể #${item.no}`;
+  const title = testCase?.title ?? `Biến thể #${item.no}`;
+  // The detail page walks the same list (session + tab) with Trước / Sau.
+  const detailHref = testCase
+    ? withFrom(p(`/test-cases/${testCase.id}?session=${sessionId}&filter=${filter}`), p(`/test-case-builder/${sessionId}`))
+    : "";
   return (
-    <li className="session-scenario">
+    <li className={`session-scenario ${selected ? "is-selected" : ""}`}>
       <div className="version-card-head">
-        <div>
-          <div className="version-title">
-            {item.testCase ? (
-              <Link className="link" href={withFrom(p(`/test-cases/${item.testCase.id}`), p(`/test-case-builder/${sessionId}`))} target="_blank" rel="noopener noreferrer" title="Mở chi tiết test case ở tab mới">{title}</Link>
-            ) : title}
-          </div>
-          <div className="muted">
-            <span className="session-code">{item.testCase ? item.testCase.case_key : `#${item.no}`}</span> · {item.map_code}
+        <div className="session-scenario-main">
+          {selectable && <input type="checkbox" className="session-select" checked={selected} onChange={onToggle} aria-label={`Chọn ${title}`} />}
+          <div>
+            <div className="version-title">
+              {testCase ? <Link className="link" href={detailHref} title="Mở chi tiết test case">{title}</Link> : title}
+            </div>
+            <div className="muted">
+              <span className="session-code">{testCase ? testCase.case_key : `#${item.no}`}</span> · {item.map_code}
+              {testCase?.locked_at && <> · <span title="Đã đưa vào chạy mô phỏng, không sửa được nữa">🔒 đã khóa</span></>}
+            </div>
           </div>
         </div>
         <div className="session-scenario-actions">
           {item.status === "PENDING" && canDecide && <>
-            <button type="button" className="icon-button session-reject" title="Từ chối" aria-label={`Từ chối ${title}`} disabled={busy} onClick={() => void decide("REJECTED")}><Icon name="x" /></button>
-            <button type="button" className="icon-button session-approve" title="Duyệt" aria-label={`Duyệt ${title}`} disabled={busy} onClick={() => void decide("APPROVED")}><Icon name="tick" /></button>
+            <button type="button" className="icon-button session-reject" title="Không phê duyệt" aria-label={`Không phê duyệt ${title}`} disabled={busy} onClick={() => void decide("REJECTED")}><Icon name="x" /></button>
+            <button type="button" className="icon-button session-approve" title="Phê duyệt" aria-label={`Phê duyệt ${title}`} disabled={busy} onClick={() => void decide("APPROVED")}><Icon name="tick" /></button>
           </>}
           <ScenarioBadge status={item.status} />
         </div>
@@ -249,29 +265,84 @@ function ScenarioRow({ sessionId, item, canDecide, onDecided }: { sessionId: num
       {item.status === "GENERATING" && <div className="muted"><span className="spinner" />Agent đang sinh…</div>}
       {item.error && <div className="error-code">{item.error.message}</div>}
       {error && <div className="error-code">{error}</div>}
-      {version && (
+      {testCase && (
         <div className="metadata-summary">
-          <span><DangerBadge level={version.danger_level} /></span>
-          <span><b>Xe ego</b> {version.ego_vehicle_code}</span>
-          <span><b>Tác nhân</b> {version.adversary_type}</span>
-          <span><b>Môi trường</b> {version.environment_code}</span>
+          <span><DangerBadge level={testCase.danger_level} /></span>
+          <span><b>Xe ego</b> {testCase.ego_vehicle_code}</span>
+          <span><b>Tác nhân</b> {testCase.adversary_type}</span>
+          <span><b>Môi trường</b> {testCase.environment_code}</span>
+          {testCase.revision > 1 && <span><b>Đã sửa</b> {testCase.revision - 1} lần</span>}
         </div>
       )}
     </li>
   );
 }
 
-function ScenarioReviewList({ detail, canDecide, onDecided }: { detail: BuilderSessionDetail; canDecide: boolean; onDecided: () => void }) {
+function ScenarioReviewList({ detail, onChanged }: { detail: BuilderSessionDetail; onChanged: () => void }) {
+  const { session } = useSession();
   const [filter, setFilter] = useState<QueueFilter>("ALL");
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<{ message: string; undo?: { id: number; title: string } } | null>(null);
   const items = scenarioItems(detail);
   const count = (status: ScenarioStatus) => items.filter((item) => item.status === status).length;
   const tabs: { key: QueueFilter; label: string; count: number }[] = [
     { key: "ALL", label: "Tất cả", count: items.length },
     { key: "PENDING", label: "Chờ duyệt", count: count("PENDING") },
     { key: "APPROVED", label: "Đã duyệt", count: count("APPROVED") },
-    { key: "REJECTED", label: "Từ chối", count: count("REJECTED") },
+    { key: "REJECTED", label: "Không phê duyệt", count: count("REJECTED") },
+    { key: "DISCARDED", label: "Đã loại bỏ", count: count("DISCARDED") },
   ];
   const visible = filter === "ALL" ? items : items.filter((item) => item.status === filter);
+  const cases = new Map(items.filter((item) => item.testCase).map((item) => [item.testCase!.id, item.testCase!]));
+  const chosen = [...selected].map((id) => cases.get(id)).filter((item): item is TestCase => !!item);
+  const decidable = chosen.filter((item) => item.can.includes("decide"));
+  const discardable = chosen.filter((item) => item.can.includes("discard"));
+  const selectableVisible = visible.map((item) => item.testCase).filter((item): item is TestCase => !!item && (item.can.includes("decide") || item.can.includes("discard")));
+
+  // The notice (with its undo button) disappears after a few seconds, like a toast.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(null), notice.undo ? 5000 : 8000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
+  function toggle(id: number) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  async function batch(kind: Decision | "DISCARD") {
+    if (!session) return;
+    setBusy(true);
+    try {
+      const result = kind === "DISCARD"
+        ? await api.discardCases(session.access_token, discardable.map((item) => item.id))
+        : await api.decideCases(session.access_token, decidable.map((item) => item.id), kind);
+      const verb = kind === "DISCARD" ? "Đã loại bỏ" : kind === "APPROVED" ? "Đã phê duyệt" : "Không phê duyệt";
+      setNotice({ message: batchSummary(verb, result.results) });
+      setSelected(new Set());
+      onChanged();
+    } catch (reason) {
+      setNotice({ message: errorText(reason, "Không thực hiện được thao tác hàng loạt.") });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function undo(target: { id: number; title: string }) {
+    if (!session) return;
+    try {
+      await api.undoDecision(session.access_token, target.id);
+      setNotice({ message: `Đã hoàn tác quyết định cho ${target.title}` });
+      onChanged();
+    } catch (reason) {
+      setNotice({ message: errorText(reason, "Không hoàn tác được.") });
+    }
+  }
 
   return (
     <section className="panel">
@@ -280,21 +351,57 @@ function ScenarioReviewList({ detail, canDecide, onDecided }: { detail: BuilderS
           <div className="panel-title">Kịch bản đã sinh</div>
           <div className="panel-subtitle">
             {count("GENERATING") > 0 ? `Agent đang sinh ${count("GENERATING")}/${items.length}… · ` : ""}
-            {count("PENDING")} chờ duyệt · {count("APPROVED")} đã duyệt · {count("REJECTED") + count("FAILED")} bị loại
+            {count("PENDING")} chờ duyệt · {count("APPROVED")} đã duyệt · {count("REJECTED")} không phê duyệt · {count("DISCARDED") + count("FAILED")} bị loại
           </div>
         </div>
         <SessionBadge status={detail.status} />
       </div>
       <div className="tabs session-tabs" role="tablist">
         {tabs.map((tab) => (
-          <button key={tab.key} type="button" role="tab" aria-selected={filter === tab.key} className={filter === tab.key ? "active" : ""} onClick={() => setFilter(tab.key)}>
+          <button key={tab.key} type="button" role="tab" aria-selected={filter === tab.key} className={filter === tab.key ? "active" : ""} onClick={() => { setFilter(tab.key); setSelected(new Set()); }}>
             {tab.label} <span className="muted">{tab.count}</span>
           </button>
         ))}
       </div>
+      {notice && (
+        <div className="notice notice-info session-notice" role="status">
+          {notice.message}
+          {notice.undo && <button type="button" className="text-button" onClick={() => void undo(notice.undo!)}>Hoàn tác</button>}
+        </div>
+      )}
+      {selectableVisible.length > 0 && (
+        <div className="session-bulk">
+          <label className="session-bulk-all">
+            <input
+              type="checkbox"
+              checked={selectableVisible.every((item) => selected.has(item.id))}
+              onChange={(event) => setSelected(event.target.checked ? new Set(selectableVisible.map((item) => item.id)) : new Set())}
+            />
+            {chosen.length ? `Đã chọn ${chosen.length}` : "Chọn tất cả"}
+          </label>
+          {chosen.length > 0 && <>
+            {decidable.length > 0 && <>
+              <button type="button" className="button primary" disabled={busy} onClick={() => void batch("APPROVED")}>Phê duyệt ({decidable.length})</button>
+              <button type="button" className="button danger-button" disabled={busy} onClick={() => void batch("REJECTED")}>Không phê duyệt ({decidable.length})</button>
+            </>}
+            {discardable.length > 0 && <button type="button" className="button" disabled={busy} onClick={() => void batch("DISCARD")}>Loại bỏ ({discardable.length})</button>}
+            <button type="button" className="text-button" onClick={() => setSelected(new Set())}>Bỏ chọn</button>
+          </>}
+        </div>
+      )}
       {visible.length === 0 ? <Empty>Không có kịch bản ở trạng thái này.</Empty> : (
         <ul className="session-queue">
-          {visible.map((item) => <ScenarioRow key={item.no} sessionId={detail.id} item={item} canDecide={canDecide} onDecided={onDecided} />)}
+          {visible.map((item) => (
+            <ScenarioRow
+              key={item.no}
+              sessionId={detail.id}
+              item={item}
+              filter={filter}
+              selected={!!item.testCase && selected.has(item.testCase.id)}
+              onToggle={() => item.testCase && toggle(item.testCase.id)}
+              onDecided={(message, undoTarget) => { setNotice({ message, undo: undoTarget }); onChanged(); }}
+            />
+          ))}
         </ul>
       )}
     </section>
@@ -304,7 +411,7 @@ function ScenarioReviewList({ detail, canDecide, onDecided }: { detail: BuilderS
 /* /test-case-builder/[id] — left: the inputs of this session (read-only), right: generated test cases to review. */
 export function AgentSessionDetailScreen() {
   const p = useProjectPath();
-  const { session, can } = useSession();
+  const { session } = useSession();
   const params = useParams<{ id: string }>();
   const [detail, setDetail] = useState<BuilderSessionDetail | null>(null);
   const [error, setError] = useState("");
@@ -341,7 +448,7 @@ export function AgentSessionDetailScreen() {
       <div className="session-workspace">
         <div className="session-col"><SessionInputView input={detail} /></div>
         <div className="session-col session-col-sticky">
-          <ScenarioReviewList detail={detail} canDecide={can("review:decide")} onDecided={load} />
+          <ScenarioReviewList detail={detail} onChanged={load} />
         </div>
       </div>
     </main>

@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.modules.builder.schemas import BuilderError, BuilderMapOptions, BuilderSessionCreate, BuilderSessionDetail, BuilderSessionSummary
 from app.modules.builder.service import create_session, get_session_row, session_cases, start_run
 from app.modules.generation.agent_client import AgentPort, get_agent
 from app.modules.identity.dependencies import Principal, require
-from app.modules.testcase.service import case_response
+from app.modules.testcase.service import case_responses
 from app.shared.infrastructure.db import get_session
-from app.shared.infrastructure.models import BuilderSession, TestCase, User, VersionStatus
+from app.shared.infrastructure.models import BuilderSession, TestCase, TestCaseStatus, User
 
 router = APIRouter(prefix="/builder-sessions", tags=["builder-sessions"])
 
@@ -23,24 +22,20 @@ async def creator_names(session: AsyncSession, ids: set[int]) -> dict[int, str]:
     return {user.id: user.display_name or user.email for user in users.all()}
 
 
-def is_pending(case: TestCase) -> bool:
-    latest = max(case.versions, key=lambda item: item.version_no) if case.versions else None
-    return latest is None or latest.status not in (VersionStatus.APPROVED, VersionStatus.REJECTED)
-
-
 async def pending_counts(session: AsyncSession, project_id: int, builder_ids: list[int]) -> dict[int, int]:
+    """PENDING cases per session (what reviewers still have to look at)."""
     if not builder_ids:
         return {}
-    cases = await session.scalars(
-        select(TestCase)
-        .where(TestCase.project_id == project_id, TestCase.builder_session_id.in_(builder_ids))
-        .options(selectinload(TestCase.versions))
+    rows = await session.execute(
+        select(TestCase.builder_session_id, func.count())
+        .where(
+            TestCase.project_id == project_id,
+            TestCase.builder_session_id.in_(builder_ids),
+            TestCase.status == TestCaseStatus.PENDING,
+        )
+        .group_by(TestCase.builder_session_id)
     )
-    counts: dict[int, int] = {}
-    for case in cases.all():
-        if is_pending(case):
-            counts[case.builder_session_id] = counts.get(case.builder_session_id, 0) + 1
-    return counts
+    return {builder_id: int(count) for builder_id, count in rows}
 
 
 def summary(builder: BuilderSession, names: dict[int, str] | None = None, pending: int = 0) -> BuilderSessionSummary:
@@ -108,8 +103,8 @@ async def read_builder_session(
         **summary(
             builder,
             await creator_names(session, {builder.created_by}),
-            sum(1 for case in cases if is_pending(case)),
+            sum(1 for case in cases if case.status is TestCaseStatus.PENDING),
         ).model_dump(),
         errors=[BuilderError(**item) for item in builder.errors],
-        test_cases=[case_response(case) for case in cases],
+        test_cases=await case_responses(session, cases, actor),
     )

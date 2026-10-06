@@ -1,7 +1,7 @@
-"""Test Case Builder sessions: one description + picked maps -> TARGET_COUNT Agent runs, each saved as a DRAFT test case.
+"""Test Case Builder sessions: one description + picked maps -> TARGET_COUNT Agent runs, each saved as a PENDING test case.
 
 The run happens in the background (each Agent call takes seconds); the session row tracks progress and errors.
-Every variant reuses the normal generation flow (create_generation + accept_generation), so provenance, XOSC
+Every variant reuses the normal generation flow (create_generation + save_generation_as_case), so provenance, XOSC
 upload and audit stay identical to a single generation.
 """
 from __future__ import annotations
@@ -15,17 +15,16 @@ from typing import Any
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.modules.builder.schemas import BuilderMapOptions, BuilderSessionCreate
 from app.modules.generation.agent_client import AgentPort
-from app.modules.generation.router import accept_generation, create_generation
+from app.modules.generation.router import create_generation, save_generation_as_case
 from app.modules.generation.schemas import GenerationAccept, GenerationCreate, GenerationMetadata
 from app.modules.identity.dependencies import Principal
 from app.shared.domain.errors import DomainError, NotFound
 from app.shared.infrastructure.audit import record_audit
 from app.shared.infrastructure.db import SessionFactory
-from app.shared.infrastructure.models import BuilderSession, BuilderSessionStatus, TestCase, TestCaseVersion
+from app.shared.infrastructure.models import BuilderSession, BuilderSessionStatus, TestCase
 
 log = logging.getLogger("scenario_forge.builder")
 
@@ -173,8 +172,9 @@ async def run_variant(builder_id: int, builder: BuilderSession, actor: Principal
                 ),
                 actor, session, agent,
             )
-            suggested = generation.suggested_version
-            accepted = await accept_generation(
+            suggested = generation.suggested_metadata
+            # Saved straight into PENDING: generated once, reviewers approve or reject, no draft step.
+            await save_generation_as_case(
                 generation.id,
                 GenerationAccept(
                     title=case_title(builder, variant),
@@ -185,14 +185,10 @@ async def run_variant(builder_id: int, builder: BuilderSession, actor: Principal
                     environment_code=variant.environment_code or suggested.environment_code,
                     danger_level=variant.danger_level or suggested.danger_level,
                     tag_names=builder.tag_names or suggested.tag_names,
-                    change_note=f"Test Case Builder #{builder_id} · biến thể {variant.no}",
                 ),
                 actor, session,
-            )
-            await session.execute(
-                update(TestCase)
-                .where(TestCase.id == accepted.test_case_id)
-                .values(builder_session_id=builder_id, builder_variant_no=variant.no)
+                builder_session_id=builder_id,
+                builder_variant_no=variant.no,
             )
             await session.execute(
                 update(BuilderSession)
@@ -259,6 +255,5 @@ async def session_cases(session: AsyncSession, project_id: int, builder_id: int)
     return list((await session.scalars(
         select(TestCase)
         .where(TestCase.project_id == project_id, TestCase.builder_session_id == builder_id)
-        .options(selectinload(TestCase.versions).selectinload(TestCaseVersion.tags))
         .order_by(TestCase.builder_variant_no, TestCase.id)
     )).all())

@@ -72,6 +72,8 @@ Khi nhóm chốt tên chính thức của 5 trường, thay tên trong DTO/schem
 18. [17-deploy-render.md](docs/17-deploy-render.md) — triển khai lên Render
 19. [18-worker-carla-vps.md](docs/18-worker-carla-vps.md) — worker CARLA, bảo mật và kết nối với production trên VPS (thiết kế)
 20. [19-agent-sinh-kich-ban.md](docs/19-agent-sinh-kich-ban.md) — Agent sinh kịch bản từ prompt dựa trên dữ liệu CARLA (mặc định / CARLA của người dùng)
+21. [20-kich-ban-khong-version.md](docs/20-kich-ban-khong-version.md) — kịch bản không có version: sinh một lần, sửa ghi đè, khóa khi đưa vào chạy, duyệt nhanh và hàng loạt (đã triển khai)
+22. [21-simulator-runner-bridge.md](docs/21-simulator-runner-bridge.md) — Simulator Runner qua Bridge: BE gửi `run.assign`, Bridge trả `job.completed` / `job.failed` (backend đã triển khai)
 
 ## Tìm kiếm semantic/RAG
 

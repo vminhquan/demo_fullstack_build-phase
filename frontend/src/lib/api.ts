@@ -4,8 +4,11 @@ export type Role = "ADMIN" | "MEMBER";
 export type Responsibility = "TESTCASE_CREATE" | "TESTCASE_REVIEW" | "TESTCASE_SELF_REVIEW";
 export type AccountStatus = "PENDING_REGISTRATION" | "ACTIVE" | "SUSPENDED";
 export type ProjectStatus = "ACTIVE" | "SUSPENDED" | "ARCHIVED";
-export type VersionStatus = "DRAFT" | "IN_REVIEW" | "EDIT" | "APPROVED" | "REJECTED";
-export type ReviewDecision = "APPROVED" | "EDIT" | "REJECTED";
+/** PENDING: waiting for a reviewer · REJECTED: a reviewer declined it · DISCARDED: its creator removed it before review. */
+export type TestCaseStatus = "PENDING" | "APPROVED" | "REJECTED" | "DISCARDED";
+export type Decision = "APPROVED" | "REJECTED";
+/** What the caller may do with a case right now (computed by the Backend). */
+export type TestCaseAction = "edit" | "discard" | "restore" | "decide";
 export type DangerLevel = "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
 export type RunStatus = "QUEUED" | "CLAIMED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 export type RunVerdict = "PASS" | "FAIL" | "ERROR";
@@ -26,20 +29,31 @@ export type Session = {
 };
 export type CurrentSession = Pick<Session, "user" | "projects" | "active_project">;
 
-export type VersionPayload = {
+/** The five metadata fields + tags a person can edit on a test case. */
+export type CaseMetadata = {
   map_code: string; ego_vehicle_code: string; adversary_type: string; environment_code: string;
-  danger_level: DangerLevel; scenario_input: Record<string, unknown>; tag_names: string[]; change_note?: string | null;
+  danger_level: DangerLevel; tag_names: string[];
 };
-export type TestCaseVersion = VersionPayload & {
-  id: number; test_case_id: number; version_no: number; status: VersionStatus; xosc_artifact_id: number | null; catalog_snapshot_id?: number | null;
-  created_by: number; created_at: string; submitted_at: string | null; decided_at: string | null; decided_by: number | null; tags: string[];
-};
+/** In-place edit; omitted fields keep their value. Any change sends the case back to PENDING. */
+export type TestCaseUpdate = Partial<CaseMetadata & { title: string; description: string | null; scenario_input: Record<string, unknown> }> & { expected_revision: number };
+/** One scenario: generated once, edited in place (no versions), locked for good once put into a simulator run. */
 export type TestCase = {
-  id: number; case_key: string; title: string; description: string | null; created_by: number;
-  created_at: string; updated_at: string; archived_at: string | null; latest_version: TestCaseVersion | null;
+  id: number; case_key: string; title: string; description: string | null; status: TestCaseStatus;
+  map_code: string; ego_vehicle_code: string; adversary_type: string; environment_code: string; danger_level: DangerLevel;
+  scenario_input: Record<string, unknown>; xosc_artifact_id: number | null; xosc_sha256: string | null; catalog_snapshot_id: number | null;
+  revision: number; config_sha256: string;
+  created_by: number; created_by_name: string | null; last_edited_by: number | null; last_edited_by_name: string | null; last_edited_at: string | null;
+  decided_by: number | null; decided_by_name: string | null; decided_at: string | null;
+  discarded_at: string | null; locked_at: string | null; archived_at: string | null; created_at: string; updated_at: string; tags: string[];
   /** Test Case Builder session that generated the case, and its position (1..10) in that session. */
-  builder_session_id?: number | null; builder_variant_no?: number | null;
+  builder_session_id: number | null; builder_variant_no: number | null;
+  can: TestCaseAction[];
 };
+export type TestCaseDecision = {
+  id: number; test_case_id: number; case_key: string | null; title: string | null; decision: Decision; revision: number;
+  config_sha256: string; decided_by: number; decided_by_name: string | null; created_at: string; undone_at: string | null;
+};
+export type BatchItemResult = { id: number; status: TestCaseStatus | null; error: string | null; message: string | null };
 /** One picked map and the values ticked for it; an empty list leaves that category to the Agent. */
 export type BuilderMapOptions = {
   map_code: string; ego_vehicle_codes: string[]; adversary_types: string[]; environment_codes: string[]; danger_levels: DangerLevel[];
@@ -83,7 +97,7 @@ export type SearchFilters = {
   danger_level?: string[]; status?: string[]; creator_id?: number[]; tag?: string[];
 };
 export type SearchHit = {
-  case_id: number; case_key: string; version_id: number; version_no: number; title: string; status: VersionStatus;
+  case_id: number; case_key: string; revision: number; title: string; status: TestCaseStatus;
   map_code: string; adversary_type: string; environment_code: string; danger_level: DangerLevel; tags: string[];
   score: number | null; matched_by: string[];
 };
@@ -92,23 +106,30 @@ export type RagSearchFilters = Partial<Record<"map_code" | "adversary_type" | "e
 export type SimulationSummary = { run_result_id: number | null; run_job_id: number | null; verdict: RunVerdict; collision: boolean; min_ttc_seconds: number | null; duration_ms: number | null; metrics: Record<string, unknown> };
 export type RagSearchHit = SearchHit & { match_reasons: string[]; simulation: SimulationSummary | null };
 export type RagSearchResponse = { prompt: string; interpreted_filters: RagSearchFilters; items: RagSearchHit[]; total: number; retrieval_mode: string; semantic_fallback: boolean };
-export type ReviewComment = { id: number; creator_id: number; body: string; comment_type: "COMMENT" | "DECISION"; created_at: string };
-export type ReviewEvidence = { run_result_id: number; run_job_id: number; verdict: RunVerdict; collision: boolean; min_ttc_seconds: number | null; recorded_at: string; total_runs: number };
-export type Review = {
-  id: number; version_id: number; requested_by: number; requested_at: string; resolved_by: number | null;
-  resolved_at: string | null; decision: ReviewDecision | null; comments: ReviewComment[];
-  case_id: number | null; case_key: string | null; title: string | null; version_no: number | null; version_status: VersionStatus | null;
-  map_code: string | null; adversary_type: string | null; environment_code: string | null; danger_level: DangerLevel | null;
-  requested_by_name: string | null; resolved_by_name: string | null; decision_comment: string | null; evidence: ReviewEvidence | null;
-};
-export type WorkSummary = { scope: "all" | "mine"; pending_review: number; needs_changes: number; approved_not_in_suite: number; in_suite_without_result: number };
-export type TestSuiteItem = { test_case_version_id: number; position: number; added_by: number; added_at: string };
+export type WorkSummary = { scope: "all" | "mine"; pending_review: number; rejected: number; approved_not_in_suite: number; in_suite_without_result: number };
+export type TestSuiteItem = { test_case_id: number; position: number; added_by: number; added_at: string };
 export type TestSuite = { id: number; name: string; description: string | null; created_by: number; created_at: string; updated_at: string; items: TestSuiteItem[] };
+/** Simulator Runner run executed by the project's Bridge (run.assign → results over the Bridge socket). */
+export type SimulatorRunStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
+export type SimulatorRunJob = {
+  test_case_id: number; case_key: string; title: string; map_code: string; adversary_type: string; environment_code: string;
+  danger_level: DangerLevel; revision: number | null; status: RunStatus; verdict: RunVerdict | null; collision: boolean | null;
+  min_ttc_seconds: number | null; duration_ms: number | null; exit_code: number | null; metrics: Record<string, unknown>;
+  error_code: string | null; error_message: string | null; started_at: string | null; finished_at: string | null;
+};
+export type SimulatorRun = {
+  id: number; status: SimulatorRunStatus; created_at: string; started_at: string | null; finished_at: string | null;
+  dispatched_at: string | null; accepted_at: string | null; requested_by: number; requested_by_name: string | null;
+  bridge: { connection_uid: string; name: string; online: boolean } | null;
+  total: number; done: number; passed: number; failed: number; errors: number; test_case_ids: number[];
+};
+export type SimulatorRunDetail = SimulatorRun & { jobs: SimulatorRunJob[]; skipped: { id: number; reason: string }[] };
+export type CaseRunEntry = { run_id: number; created_at: string; requested_by_name: string | null; job: SimulatorRunJob };
 export type SuiteRun = { id: number; suite_id: number; status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED"; total_jobs: number; completed_jobs: number; created_at: string; started_at: string | null; finished_at: string | null };
-export type RunResult = { id: number; run_job_id: number; test_case_version_id: number; verdict: RunVerdict; metrics: Record<string, unknown>; scenario_runner_exit_code: number | null; duration_ms: number | null };
-export type RunResultListItem = RunResult & { test_case_id: number; case_key: string; title: string; version_no: number; map_code: string; adversary_type: string; environment_code: string; collision: boolean; min_ttc_seconds: number | null; created_at: string };
+export type RunResult = { id: number; run_job_id: number; test_case_id: number; revision: number | null; verdict: RunVerdict; metrics: Record<string, unknown>; scenario_runner_exit_code: number | null; duration_ms: number | null };
+export type RunResultListItem = RunResult & { case_key: string; title: string; map_code: string; adversary_type: string; environment_code: string; collision: boolean; min_ttc_seconds: number | null; created_at: string };
 export type RunResultPage = { items: RunResultListItem[]; page: number; page_size: number; total: number };
-export type RunJob = { id: number; suite_run_id: number | null; test_case_version_id: number; status: RunStatus; worker_id: string | null; attempt: number; error_code: string | null; error_message: string | null; result: RunResult | null };
+export type RunJob = { id: number; suite_run_id: number | null; test_case_id: number; status: RunStatus; worker_id: string | null; attempt: number; error_code: string | null; error_message: string | null; result: RunResult | null };
 export type RunJobSummary = Omit<RunJob, "suite_run_id" | "worker_id" | "result">;
 export type CatalogSource = "DEFAULT" | "WORKER" | "IMPORT";
 export type CatalogSnapshot = { id: number; source: CatalogSource; is_default: boolean; carla_version: string; map_name: string; content_hash: string; spawn_point_count: number; waypoint_count: number; vehicle_count: number; walker_count: number; label: string | null; worker_installation_id: number | null; created_by: number | null; created_at: string };
@@ -187,14 +208,13 @@ export type ScenarioIR = { name: string; description: string; ego: { initial_spe
 export type PreviewPoint = { step: number; x: number; y: number };
 export type PlacedEntity = { entity_name: string; actor_type: string; blueprint: string; x: number; y: number; z: number; yaw_deg: number; initial_speed_kmh: number; relative_position: string; trigger: string | null; trigger_distance_m: number | null; lane: { road_id: number; lane_id: number } | null; placement: "lane" | "roadside" | "geometric" | "spawn_point"; preview_waypoints: PreviewPoint[] };
 export type Grounding = { map_name: string; carla_version: string; catalog_content_hash: string | null; ego_spawn_index: number; fully_on_lanes: boolean; ego: PlacedEntity; actors: PlacedEntity[]; warnings: string[] };
-export type SuggestedVersion = { map_code: string; ego_vehicle_code: string; adversary_type: string; environment_code: string; danger_level: DangerLevel; tag_names: string[] };
+export type SuggestedMetadata = { map_code: string; ego_vehicle_code: string; adversary_type: string; environment_code: string; danger_level: DangerLevel; tag_names: string[] };
 export type ScenarioGeneration = {
   id: number; status: "COMPLETED" | "ACCEPTED"; prompt: string; catalog: CatalogSnapshot; generation_mode: "llm" | "deterministic"; model: string | null;
   scenario_ir: ScenarioIR; form: { spec: ScenarioSpec | null; constraints: Record<string, unknown> | null } | null; interpretation: Record<string, unknown>; validation: { is_valid?: boolean; verdict?: string; errors?: string[]; warnings?: string[] };
   threat_score: { weighted_threat?: number; dominant_dimension?: string }; grounding: Grounding; xosc_validation: { schema_valid?: boolean; errors?: string[]; schema?: string };
-  retrieved_regulations: string[]; warnings: string[]; xosc: string; xosc_sha256: string; suggested_version: SuggestedVersion; accepted_version_id: number | null; created_by: number; created_at: string;
+  retrieved_regulations: string[]; warnings: string[]; xosc: string; xosc_sha256: string; suggested_metadata: SuggestedMetadata; accepted_test_case_id: number | null; created_by: number; created_at: string;
 };
-export type GenerationAccept = SuggestedVersion & { test_case_id?: number | null; version_id?: number | null; title?: string | null; description?: string | null; change_note?: string | null };
 export type AuditLog = { id: number; actor_user_id: number | null; actor_name: string | null; actor_email: string | null; entity_label: string | null; action: string; entity_type: string; entity_id: number | null; entity_version_id: number | null; request_id: string | null; before_data: Record<string, unknown> | null; after_data: Record<string, unknown> | null; created_at: string };
 
 export class ApiError extends Error {
@@ -209,9 +229,9 @@ async function parseError(response: Response): Promise<ApiError> {
 
 // Backend resources that belong to one project are served under /projects/{project_id}/….
 const PROJECT_SCOPED = [
-  "/test-cases", "/test-case-versions", "/reviews", "/rag-search", "/test-suites", "/suite-runs", "/run-jobs", "/run-results",
+  "/test-cases", "/test-case-decisions", "/rag-search", "/test-suites", "/suite-runs", "/run-jobs", "/run-results",
   "/artifacts", "/audit-logs", "/dashboard", "/carla-catalog", "/scenario-generations", "/odd-profile", "/reports", "/builder-sessions",
-  "/bridges",
+  "/bridges", "/simulator-runs",
 ];
 
 /** Project of the page (/projects/{id}/… in the address bar), else the project selected in the access token. */
@@ -258,9 +278,6 @@ async function download(path: string, token: string): Promise<Blob> {
 
 type Id = number | string;
 
-// Backend routes: POST /reviews/{id}/approve | request-edit | reject.
-const REVIEW_DECISION_PATHS: Record<ReviewDecision, string> = { APPROVED: "approve", EDIT: "request-edit", REJECTED: "reject" };
-
 export const api = {
   login: (email: string, password: string) => request<Session>("/auth/login", { method: "POST", body: JSON.stringify({ email, password }) }),
   register: (email: string, password: string, displayName: string) => request<Session>("/auth/register", { method: "POST", body: JSON.stringify({ email, password, display_name: displayName }) }),
@@ -288,39 +305,41 @@ export const api = {
   searchCases: (token: string, body: { query: string; mode: "filter" | "keyword" | "semantic" | "hybrid"; filters: SearchFilters; page: number; page_size: number }) => request<SearchResponse>("/test-cases/search", { method: "POST", body: JSON.stringify(body) }, token),
   ragSearch: (token: string, body: { prompt: string; filters: RagSearchFilters; limit?: number }) => request<RagSearchResponse>("/rag-search", { method: "POST", body: JSON.stringify(body) }, token),
   getCase: (token: string, id: Id) => request<TestCase>(`/test-cases/${id}`, {}, token),
-  createCase: (token: string, title: string, description: string) => request<TestCase>("/test-cases", { method: "POST", body: JSON.stringify({ title, description }) }, token),
-  updateCase: (token: string, id: Id, title: string, description: string) => request<TestCase>(`/test-cases/${id}`, { method: "PATCH", body: JSON.stringify({ title, description }) }, token),
-  listVersions: (token: string, caseId: Id) => request<TestCaseVersion[]>(`/test-cases/${caseId}/versions`, {}, token),
-  getVersion: (token: string, versionId: Id) => request<TestCaseVersion>(`/test-case-versions/${versionId}`, {}, token),
-  createVersion: (token: string, caseId: Id, payload: VersionPayload) => request<TestCaseVersion>(`/test-cases/${caseId}/versions`, { method: "POST", body: JSON.stringify(payload) }, token),
-  updateVersion: (token: string, versionId: Id, payload: VersionPayload) => request<TestCaseVersion>(`/test-case-versions/${versionId}`, { method: "PATCH", body: JSON.stringify(payload) }, token),
-  cloneVersion: (token: string, versionId: Id) => request<TestCaseVersion>(`/test-case-versions/${versionId}/clone`, { method: "POST" }, token),
-  uploadXosc: (token: string, versionId: Id, file: File) => { const body = new FormData(); body.set("file", file); return request<{ artifact_id: number; sha256: string; size_bytes: number }>(`/test-case-versions/${versionId}/xosc`, { method: "POST", body }, token); },
-  downloadXosc: (token: string, versionId: Id) => download(`/test-case-versions/${versionId}/xosc`, token),
+  updateCase: (token: string, id: Id, body: TestCaseUpdate) => request<TestCase>(`/test-cases/${id}`, { method: "PATCH", body: JSON.stringify(body) }, token),
+  uploadXosc: (token: string, caseId: Id, file: File, expectedRevision: number) => { const body = new FormData(); body.set("file", file); body.set("expected_revision", String(expectedRevision)); return request<{ artifact_id: number; sha256: string; size_bytes: number }>(`/test-cases/${caseId}/xosc`, { method: "POST", body }, token); },
+  downloadXosc: (token: string, caseId: Id) => download(`/test-cases/${caseId}/xosc`, token),
+  decideCase: (token: string, id: Id, decision: Decision, expectedRevision?: number) => request<TestCase>(`/test-cases/${id}/decision`, { method: "POST", body: JSON.stringify({ decision, expected_revision: expectedRevision ?? null }) }, token),
+  undoDecision: (token: string, id: Id) => request<TestCase>(`/test-cases/${id}/decision/undo`, { method: "POST" }, token),
+  decideCases: (token: string, ids: number[], decision: Decision) => request<{ results: BatchItemResult[] }>("/test-cases/batch/decision", { method: "POST", body: JSON.stringify({ ids, decision }) }, token),
+  discardCase: (token: string, id: Id) => request<TestCase>(`/test-cases/${id}/discard`, { method: "POST" }, token),
+  discardCases: (token: string, ids: number[]) => request<{ results: BatchItemResult[] }>("/test-cases/batch/discard", { method: "POST", body: JSON.stringify({ ids }) }, token),
+  restoreCase: (token: string, id: Id) => request<TestCase>(`/test-cases/${id}/restore`, { method: "POST" }, token),
+  /** Putting cases into a simulator run locks them for good; cases no longer APPROVED come back in `skipped`. */
+  createSimulatorRun: (token: string, connectionUid: string, testCaseIds: number[]) => request<SimulatorRunDetail>("/simulator-runs", { method: "POST", body: JSON.stringify({ connection_uid: connectionUid, test_case_ids: testCaseIds }) }, token),
+  listSimulatorRuns: (token: string) => request<SimulatorRun[]>("/simulator-runs", {}, token),
+  getSimulatorRun: (token: string, id: Id) => request<SimulatorRunDetail>(`/simulator-runs/${id}`, {}, token),
+  listCaseRuns: (token: string, caseId: Id) => request<CaseRunEntry[]>(`/simulator-runs/by-case/${caseId}`, {}, token),
+  lockCases: (token: string, ids: number[]) => request<{ locked: number[]; skipped: BatchItemResult[] }>("/test-cases/lock", { method: "POST", body: JSON.stringify({ ids }) }, token),
+  listCaseDecisions: (token: string, id: Id) => request<TestCaseDecision[]>(`/test-cases/${id}/decisions`, {}, token),
   createBridgePairCode: (token: string) => request<BridgePairCode>("/bridges/pair-codes", { method: "POST" }, token),
   cancelBridgePairCode: (token: string, id: Id) => request<void>(`/bridges/pair-codes/${id}`, { method: "DELETE" }, token),
   listBridges: (token: string) => request<BridgeConnection[]>("/bridges", {}, token),
   unpairBridge: (token: string, connectionUid: string) => request<void>(`/bridges/${encodeURIComponent(connectionUid)}`, { method: "DELETE" }, token),
   syncBridgeCatalog: (token: string, connectionUid: string, maps?: string[]) =>
     request<{ request_id: string }>(`/bridges/${encodeURIComponent(connectionUid)}/sync`, { method: "POST", body: JSON.stringify({ maps: maps ?? null }) }, token),
-  submitReview: (token: string, versionId: Id, message: string) => request<Review>(`/test-case-versions/${versionId}/submit-review`, { method: "POST", body: JSON.stringify({ message }) }, token),
-  // "open": waiting for a decision; "resolved": decision history. Members without review permission only get their own.
-  listReviews: (token: string, filter: "open" | "resolved" = "open") => request<Review[]>(filter === "resolved" ? "/reviews?resolved_only=true" : "/reviews?open_only=true", {}, token),
   workSummary: (token: string) => request<WorkSummary>("/dashboard/summary", {}, token),
-  getReview: (token: string, id: Id) => request<Review>(`/reviews/${id}`, {}, token),
-  commentReview: (token: string, id: Id, body: string) => request<Review>(`/reviews/${id}/comments`, { method: "POST", body: JSON.stringify({ body }) }, token),
-  decideReview: (token: string, id: Id, decision: ReviewDecision, comment: string) => request<Review>(`/reviews/${id}/${REVIEW_DECISION_PATHS[decision]}`, { method: "POST", body: JSON.stringify({ comment }) }, token),
+  listDecisions: (token: string) => request<TestCaseDecision[]>("/test-case-decisions", {}, token),
   listSuites: (token: string) => request<TestSuite[]>("/test-suites", {}, token),
   getSuite: (token: string, id: Id) => request<TestSuite>(`/test-suites/${id}`, {}, token),
   createSuite: (token: string, name: string, description: string) => request<TestSuite>("/test-suites", { method: "POST", body: JSON.stringify({ name, description }) }, token),
   updateSuite: (token: string, id: Id, name: string, description: string) => request<TestSuite>(`/test-suites/${id}`, { method: "PATCH", body: JSON.stringify({ name, description }) }, token),
   deleteSuite: (token: string, id: Id) => request<void>(`/test-suites/${id}`, { method: "DELETE" }, token),
-  addSuiteItem: (token: string, id: Id, versionId: Id) => request<TestSuite>(`/test-suites/${id}/items`, { method: "POST", body: JSON.stringify({ test_case_version_id: Number(versionId) }) }, token),
-  removeSuiteItem: (token: string, id: Id, versionId: Id) => request<TestSuite>(`/test-suites/${id}/items/${versionId}`, { method: "DELETE" }, token),
-  reorderSuiteItems: (token: string, id: Id, versionIds: number[]) => request<TestSuite>(`/test-suites/${id}/items/reorder`, { method: "PATCH", body: JSON.stringify({ version_ids: versionIds }) }, token),
+  addSuiteItem: (token: string, id: Id, caseId: Id) => request<TestSuite>(`/test-suites/${id}/items`, { method: "POST", body: JSON.stringify({ test_case_id: Number(caseId) }) }, token),
+  removeSuiteItem: (token: string, id: Id, caseId: Id) => request<TestSuite>(`/test-suites/${id}/items/${caseId}`, { method: "DELETE" }, token),
+  reorderSuiteItems: (token: string, id: Id, caseIds: number[]) => request<TestSuite>(`/test-suites/${id}/items/reorder`, { method: "PATCH", body: JSON.stringify({ test_case_ids: caseIds }) }, token),
   runSuite: (token: string, id: Id) => request<SuiteRun>(`/test-suites/${id}/runs`, { method: "POST" }, token),
   listSuiteRuns: (token: string, id: Id) => request<SuiteRun[]>(`/test-suites/${id}/runs`, {}, token),
-  exportSuite: (token: string, id: Id) => request<{ state: string; version_ids: number[] }>(`/test-suites/${id}/export`, { method: "POST" }, token),
+  exportSuite: (token: string, id: Id) => request<{ state: string; test_case_ids: number[] }>(`/test-suites/${id}/export`, { method: "POST" }, token),
   getSuiteRun: (token: string, id: Id) => request<SuiteRun>(`/suite-runs/${id}`, {}, token),
   listRunJobs: (token: string, id: Id) => request<RunJobSummary[]>(`/suite-runs/${id}/jobs`, {}, token),
   getRunJob: (token: string, id: Id) => request<RunJob>(`/run-jobs/${id}`, {}, token),
@@ -338,6 +357,5 @@ export const api = {
   planCases: (token: string, form: PlanForm, count: number | null) => request<CasePlan>("/odd-profile/plan", { method: "POST", body: JSON.stringify({ form, count }) }, token),
   createGeneration: (token: string, body: GenerationCreate) => request<ScenarioGeneration>("/scenario-generations", { method: "POST", body: JSON.stringify(body) }, token),
   getGeneration: (token: string, id: Id) => request<ScenarioGeneration>(`/scenario-generations/${id}`, {}, token),
-  acceptGeneration: (token: string, id: Id, body: GenerationAccept) => request<{ generation_id: number; test_case_id: number; version: TestCaseVersion }>(`/scenario-generations/${id}/accept`, { method: "POST", body: JSON.stringify(body) }, token),
   listAudit: (token: string, query: URLSearchParams) => request<AuditLog[]>(`/audit-logs?${query.toString()}`, {}, token),
 };

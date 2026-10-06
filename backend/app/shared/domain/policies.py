@@ -1,5 +1,5 @@
 from app.shared.domain.errors import Conflict, Forbidden, ValidationFailed
-from app.shared.infrastructure.models import ResponsibilityCode, RoleCode, VersionStatus
+from app.shared.infrastructure.models import ResponsibilityCode, RoleCode, TestCaseStatus
 
 # Every project member, whatever role or responsibility, can read and run suites and see who holds
 # which role/responsibility; only admins change them (member:manage).
@@ -15,9 +15,10 @@ OWNER_PERMISSIONS: frozenset[str] = frozenset({"project:delete"})
 
 RESPONSIBILITY_PERMISSIONS: dict[ResponsibilityCode, frozenset[str]] = {
     ResponsibilityCode.TESTCASE_CREATE: frozenset(
-        {"testcase:create", "testcase:update_own_draft", "testcase:submit_review", "suite:manage", "catalog:import", "odd:manage"}
+        {"testcase:create", "testcase:edit", "testcase:discard", "suite:manage", "catalog:import", "odd:manage"}
     ),
-    ResponsibilityCode.TESTCASE_REVIEW: frozenset({"review:read", "review:comment", "review:decide"}),
+    # Reviewers may make small in-place edits too; the edit sends the case back to PENDING.
+    ResponsibilityCode.TESTCASE_REVIEW: frozenset({"testcase:edit", "review:decide"}),
     ResponsibilityCode.TESTCASE_SELF_REVIEW: frozenset({"review:decide_own"}),
 }
 
@@ -53,10 +54,31 @@ def validate_responsibilities(items: set[ResponsibilityCode]) -> None:
         raise ValidationFailed("TESTCASE_SELF_REVIEW requires TESTCASE_REVIEW")
 
 
-def ensure_can_decide(version_creator_id: int, actor_id: int, permissions: frozenset[str]) -> None:
+def is_own_case(created_by: int, last_edited_by: int | None, actor_id: int) -> bool:
+    """A case counts as the actor's own if they created it or made its latest edit (no edit-then-self-approve)."""
+    return actor_id in (created_by, last_edited_by)
+
+
+def ensure_can_decide(created_by: int, last_edited_by: int | None, actor_id: int, permissions: frozenset[str]) -> None:
     require_permission(permissions, "review:decide")
-    if version_creator_id == actor_id and not has_permission(permissions, "review:decide_own"):
-        raise Forbidden("Bạn không có quyền tự duyệt test case do chính mình tạo")
+    if is_own_case(created_by, last_edited_by, actor_id) and not has_permission(permissions, "review:decide_own"):
+        raise Forbidden("Bạn không có quyền tự duyệt test case do chính mình tạo hoặc sửa")
+
+
+def ensure_pending(status: TestCaseStatus) -> None:
+    if status is not TestCaseStatus.PENDING:
+        raise Conflict("Only PENDING test cases can be decided", {"code": "NOT_PENDING"})
+
+
+def ensure_unlocked(locked_at: object | None) -> None:
+    if locked_at is not None:
+        raise Conflict("Test case was put into a simulator run and can no longer change", {"code": "TEST_CASE_LOCKED"})
+
+
+def ensure_editable(status: TestCaseStatus, locked_at: object | None) -> None:
+    ensure_unlocked(locked_at)
+    if status is TestCaseStatus.DISCARDED:
+        raise Conflict("Restore a discarded test case before editing it")
 
 
 def ensure_can_change_role(target_id: int, project_owner_id: int) -> None:
@@ -77,22 +99,6 @@ def ensure_can_leave(actor_id: int, project_owner_id: int) -> None:
         raise Forbidden("The project creator cannot leave the project")
 
 
-def ensure_editable(status: VersionStatus) -> None:
-    if status is not VersionStatus.DRAFT:
-        raise Conflict("Only DRAFT versions can be edited")
-
-
-def ensure_suite_eligible(status: VersionStatus) -> None:
-    if status is not VersionStatus.APPROVED:
-        raise Conflict("Only APPROVED test case versions can be added to a suite")
-
-
-def validate_reject_comment(comment: str | None) -> str:
-    return validate_required_review_comment(comment, "A rejection comment is required")
-
-
-def validate_required_review_comment(comment: str | None, message: str) -> str:
-    value = (comment or "").strip()
-    if not value:
-        raise ValidationFailed(message)
-    return value
+def ensure_suite_eligible(status: TestCaseStatus) -> None:
+    if status is not TestCaseStatus.APPROVED:
+        raise Conflict("Only APPROVED test cases can be added to a suite")

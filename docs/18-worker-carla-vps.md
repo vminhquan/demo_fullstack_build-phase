@@ -1,5 +1,7 @@
 # 18 — Worker CARLA và kết nối với production trên VPS
 
+> **Cập nhật:** giao thức chạy test case qua Bridge (`run.assign` / `job.*` / `run.completed`) đã triển khai ở backend theo [doc 21](21-simulator-runner-bridge.md), thay cho các message `job.*` ở §4.2.
+>
 > **Trạng thái: thiết kế, chưa triển khai.** Mục "Hiện trạng" mô tả code đang có trong repo; các mục còn lại là đề xuất. Những chỗ ghi **[Chưa kiểm chứng]** dựa trên hiểu biết về thư viện/công cụ bên ngoài, cần đối chiếu với đúng phiên bản trước khi làm.
 
 Tài liệu mô tả cách một **worker** chạy trên máy khách (cạnh CARLA) kết nối an toàn tới hệ thống Scenario Forge chạy trên **VPS**, nhận job, chạy ScenarioRunner và gửi kết quả về.

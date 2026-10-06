@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 from pydantic import BaseModel, Field
 
-from app.shared.infrastructure.models import DangerLevel, RunVerdict, VersionStatus
+from app.shared.infrastructure.models import DangerLevel, RunVerdict, TestCaseStatus
 
 
 class RagSearchFilters(BaseModel):
@@ -11,7 +11,7 @@ class RagSearchFilters(BaseModel):
     adversary_type: list[str] = Field(default_factory=list)
     environment_code: list[str] = Field(default_factory=list)
     danger_level: list[DangerLevel] = Field(default_factory=list)
-    status: list[VersionStatus] = Field(default_factory=list)
+    status: list[TestCaseStatus] = Field(default_factory=list)
     tag: list[str] = Field(default_factory=list)
     verdict: list[RunVerdict] = Field(default_factory=list)
     collision_only: bool = False
@@ -36,10 +36,9 @@ class SimulationSummary(BaseModel):
 class RagSearchHit(BaseModel):
     case_id: int
     case_key: str
-    version_id: int
-    version_no: int
+    revision: int
     title: str
-    status: VersionStatus
+    status: TestCaseStatus
     map_code: str
     adversary_type: str
     environment_code: str

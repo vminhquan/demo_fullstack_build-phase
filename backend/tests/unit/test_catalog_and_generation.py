@@ -9,7 +9,7 @@ from app.modules.catalog.contract import CatalogV1
 from app.modules.catalog.importers import from_upload, from_worker_context
 from app.modules.catalog.options import build_options, preset_label, vehicle_label
 from app.modules.catalog.service import content_hash, parse_catalog
-from app.modules.generation.mapping import danger_level, environment_code, suggested_version
+from app.modules.generation.mapping import danger_level, environment_code, suggested_metadata
 from app.shared.domain.errors import ValidationFailed
 from app.shared.domain.policies import permissions_of
 from app.shared.infrastructure.models import DangerLevel, ResponsibilityCode, RoleCode
@@ -70,7 +70,7 @@ def test_worker_context_converts_to_catalog() -> None:
 
 
 def test_primary_actor_is_the_triggered_one() -> None:
-    suggestion = suggested_version({"scenario_ir": ir(), "threat_score": {"weighted_threat": 0.5}, "grounding": {"map_name": "Town10HD_Opt", "ego": {"blueprint": "vehicle.tesla.model3"}}})
+    suggestion = suggested_metadata({"scenario_ir": ir(), "threat_score": {"weighted_threat": 0.5}, "grounding": {"map_name": "Town10HD_Opt", "ego": {"blueprint": "vehicle.tesla.model3"}}})
     assert suggestion["adversary_type"] == "cyclist"
     assert suggestion["map_code"] == "Town10HD_Opt"
     assert suggestion["ego_vehicle_code"] == "vehicle.tesla.model3"

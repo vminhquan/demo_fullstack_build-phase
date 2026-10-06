@@ -17,13 +17,14 @@ from app.modules.testsuite.schemas import (
     SuiteUpdate,
 )
 from app.shared.domain.errors import Conflict, NotFound
+from app.modules.testcase.service import lock_for_run
 from app.shared.domain.policies import ensure_suite_eligible
 from app.shared.infrastructure.audit import record_audit
 from app.shared.infrastructure.db import get_session
 from app.shared.infrastructure.models import (
     RunJob,
     SuiteRunStatus,
-    TestCaseVersion,
+    TestCase,
     TestSuite,
     TestSuiteItem,
     TestSuiteRun,
@@ -35,7 +36,7 @@ suite_runs_router = APIRouter(prefix="/suite-runs", tags=["suite-runs"])
 
 def serialize_item(item: TestSuiteItem) -> SuiteItemResponse:
     return SuiteItemResponse(
-        test_case_version_id=item.test_case_version_id,
+        test_case_id=item.test_case_id,
         position=item.position,
         added_by=item.added_by,
         added_at=item.added_at,
@@ -198,23 +199,20 @@ async def add_item(
     session: AsyncSession = Depends(get_session),
 ) -> SuiteResponse:
     suite = await get_suite(session, actor.project_id, suite_id, locked=True)
-    version = await session.scalar(
-        select(TestCaseVersion)
-        .where(
-            TestCaseVersion.id == body.test_case_version_id,
-            TestCaseVersion.project_id == actor.project_id,
-        )
+    case = await session.scalar(
+        select(TestCase)
+        .where(TestCase.id == body.test_case_id, TestCase.project_id == actor.project_id)
         .with_for_update()
     )
-    if version is None:
-        raise NotFound("Test case version not found")
-    ensure_suite_eligible(version.status)
-    if any(item.test_case_version_id == version.id for item in suite.items):
-        raise Conflict("Version is already in this suite")
+    if case is None:
+        raise NotFound("Test case not found")
+    ensure_suite_eligible(case.status)
+    if any(item.test_case_id == case.id for item in suite.items):
+        raise Conflict("Test case is already in this suite")
     suite.items.append(
         TestSuiteItem(
             project_id=actor.project_id,
-            test_case_version_id=version.id,
+            test_case_id=case.id,
             position=max((item.position for item in suite.items), default=-1) + 1,
             added_by=actor.id,
         )
@@ -226,22 +224,22 @@ async def add_item(
         action="SUITE_ITEM_ADDED",
         entity_type="TEST_SUITE",
         entity_id=suite.id,
-        entity_version_id=version.id,
+        after_data={"test_case_id": case.id},
     )
     await session.commit()
     return serialize_suite(suite)
 
 
-@router.delete("/{suite_id}/items/{version_id}", response_model=SuiteResponse)
+@router.delete("/{suite_id}/items/{test_case_id}", response_model=SuiteResponse)
 async def remove_item(
     suite_id: int,
-    version_id: int,
+    test_case_id: int,
     actor: Principal = Depends(require("suite:manage")),
     session: AsyncSession = Depends(get_session),
 ) -> SuiteResponse:
     suite = await get_suite(session, actor.project_id, suite_id, locked=True)
     item = next(
-        (value for value in suite.items if value.test_case_version_id == version_id), None
+        (value for value in suite.items if value.test_case_id == test_case_id), None
     )
     if item is None:
         raise NotFound("Test suite item not found")
@@ -257,7 +255,7 @@ async def remove_item(
         action="SUITE_ITEM_REMOVED",
         entity_type="TEST_SUITE",
         entity_id=suite.id,
-        entity_version_id=version_id,
+        before_data={"test_case_id": test_case_id},
     )
     await session.commit()
     return serialize_suite(suite)
@@ -271,11 +269,11 @@ async def reorder_items(
     session: AsyncSession = Depends(get_session),
 ) -> SuiteResponse:
     suite = await get_suite(session, actor.project_id, suite_id, locked=True)
-    existing = {item.test_case_version_id: item for item in suite.items}
-    if len(body.version_ids) != len(existing) or set(body.version_ids) != set(existing):
+    existing = {item.test_case_id: item for item in suite.items}
+    if len(body.test_case_ids) != len(existing) or set(body.test_case_ids) != set(existing):
         raise Conflict("Reorder request must include every current suite item exactly once")
-    for position, version_id in enumerate(body.version_ids):
-        existing[version_id].position = position
+    for position, case_id in enumerate(body.test_case_ids):
+        existing[case_id].position = position
     await record_audit(
         session,
         project_id=actor.project_id,
@@ -295,24 +293,27 @@ async def run_suite(
     session: AsyncSession = Depends(get_session),
 ) -> SuiteRunResponse:
     suite = await get_suite(session, actor.project_id, suite_id, locked=True)
-    if not suite.items:
-        raise Conflict("A suite must contain at least one approved version")
+    ordered = [item.test_case_id for item in sorted(suite.items, key=lambda value: value.position)]
+    # Putting cases into a run locks them for good; cases edited back to PENDING are skipped.
+    runnable, skipped = await lock_for_run(session, actor.project_id, ordered, actor.id)
+    if not runnable:
+        raise Conflict("A suite run needs at least one APPROVED test case", {"skipped": [case_id for case_id, _ in skipped]})
     run = TestSuiteRun(
         project_id=actor.project_id,
         suite_id=suite.id,
         requested_by=actor.id,
         status=SuiteRunStatus.QUEUED,
-        total_jobs=len(suite.items),
+        total_jobs=len(runnable),
     )
     session.add(run)
     await session.flush()
-    for item in sorted(suite.items, key=lambda value: value.position):
+    for case in runnable:
         session.add(
             RunJob(
                 project_id=actor.project_id,
                 suite_run_id=run.id,
-                test_case_version_id=item.test_case_version_id,
-                idempotency_key=f"suite:{run.id}:version:{item.test_case_version_id}",
+                test_case_id=case.id,
+                idempotency_key=f"suite:{run.id}:case:{case.id}",
             )
         )
     await record_audit(
@@ -322,7 +323,7 @@ async def run_suite(
         action="SUITE_RUN_REQUESTED",
         entity_type="TEST_SUITE_RUN",
         entity_id=run.id,
-        after_data={"total_jobs": run.total_jobs},
+        after_data={"total_jobs": run.total_jobs, "skipped": [case_id for case_id, _ in skipped]},
     )
     await session.commit()
     return serialize_run(run)
@@ -355,10 +356,7 @@ async def export_suite(
     session: AsyncSession = Depends(get_session),
 ) -> dict:
     suite = await get_suite(session, actor.project_id, suite_id)
-    version_ids = [
-        item.test_case_version_id
-        for item in sorted(suite.items, key=lambda value: value.position)
-    ]
+    case_ids = [item.test_case_id for item in sorted(suite.items, key=lambda value: value.position)]
     await record_audit(
         session,
         project_id=actor.project_id,
@@ -366,13 +364,13 @@ async def export_suite(
         action="SUITE_EXPORT_REQUESTED",
         entity_type="TEST_SUITE",
         entity_id=suite.id,
-        after_data={"version_ids": version_ids},
+        after_data={"test_case_ids": case_ids},
     )
     await session.commit()
     return {
         "suite_id": suite.id,
         "suite_name": suite.name,
-        "version_ids": version_ids,
+        "test_case_ids": case_ids,
         "state": "EXPORT_QUEUED",
     }
 
@@ -413,7 +411,7 @@ async def list_run_jobs(
     return [
         RunJobSummary(
             id=job.id,
-            test_case_version_id=job.test_case_version_id,
+            test_case_id=job.test_case_id,
             status=job.status,
             attempt=job.attempt,
             error_code=job.error_code,

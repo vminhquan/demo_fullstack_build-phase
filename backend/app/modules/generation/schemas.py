@@ -3,10 +3,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field
 
 from app.modules.catalog.schemas import CatalogSnapshotResponse
-from app.modules.testcase.schemas import VersionResponse
 from app.shared.infrastructure.models import DangerLevel, GenerationStatus
 
 
@@ -64,7 +63,7 @@ class RefineResponse(BaseModel):
     usage: dict[str, int] = Field(default_factory=dict)
 
 
-class SuggestedVersion(BaseModel):
+class SuggestedMetadata(BaseModel):
     map_code: str
     ego_vehicle_code: str
     adversary_type: str
@@ -94,19 +93,16 @@ class GenerationResponse(BaseModel):
     warnings: list[str]
     xosc: str
     xosc_sha256: str
-    suggested_version: SuggestedVersion
-    accepted_version_id: int | None
+    suggested_metadata: SuggestedMetadata
+    accepted_test_case_id: int | None
     created_by: int
     created_at: datetime
 
 
 class GenerationAccept(BaseModel):
-    """Save the generated scenario as a DRAFT version: a new test case, or the next version of an existing one."""
+    """Metadata of the PENDING test case a generation is saved as (no versions, no draft step)."""
 
-    test_case_id: int | None = None
-    # Attach to an existing DRAFT version instead (e.g. a version that has no .xosc yet).
-    version_id: int | None = None
-    title: str | None = Field(default=None, min_length=1, max_length=300)
+    title: str = Field(min_length=1, max_length=300)
     description: str | None = None
     map_code: str = Field(min_length=1, max_length=120)
     ego_vehicle_code: str = Field(min_length=1, max_length=255)
@@ -114,16 +110,3 @@ class GenerationAccept(BaseModel):
     environment_code: str = Field(min_length=1, max_length=120)
     danger_level: DangerLevel
     tag_names: list[str] = Field(default_factory=list)
-    change_note: str | None = None
-
-    @model_validator(mode="after")
-    def _title_for_new_case(self) -> "GenerationAccept":
-        if self.test_case_id is None and self.version_id is None and not self.title:
-            raise ValueError("title is required when creating a new test case")
-        return self
-
-
-class GenerationAcceptResponse(BaseModel):
-    generation_id: int
-    test_case_id: int
-    version: VersionResponse

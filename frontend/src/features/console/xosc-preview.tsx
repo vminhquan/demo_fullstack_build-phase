@@ -139,8 +139,8 @@ function XoscPlot({ parsed }: { parsed: ParsedXosc }) {
   );
 }
 
-/** Preview of the .xosc attached to a version: scene sketch, entities, storyboard events, environment and raw XML. */
-export function XoscPreview({ versionId, versionNo, grounding }: { versionId: number; versionNo: number; grounding?: Grounding | null }) {
+/** Preview of the .xosc attached to a test case: scene sketch, entities, storyboard events, environment and raw XML. */
+export function XoscPreview({ caseId, fileName, grounding }: { caseId: number; fileName: string; grounding?: Grounding | null }) {
   const { session } = useSession();
   const token = session?.access_token;
   const [text, setText] = useState<string | null>(null);
@@ -149,12 +149,12 @@ export function XoscPreview({ versionId, versionNo, grounding }: { versionId: nu
   useEffect(() => {
     if (!token) return;
     let active = true;
-    api.downloadXosc(token, versionId)
+    api.downloadXosc(token, caseId)
       .then((blob) => blob.text())
       .then((value) => { if (active) { setText(value); setError(""); } })
       .catch((reason) => { if (active) setError(reason instanceof ApiError ? reason.message : "Không tải được tệp .xosc."); });
     return () => { active = false; };
-  }, [token, versionId]);
+  }, [token, caseId]);
 
   const parsed = useMemo(() => {
     if (text === null) return null;
@@ -220,7 +220,7 @@ export function XoscPreview({ versionId, versionNo, grounding }: { versionId: nu
         <pre>{text}</pre>
       </details>
       <div className="form-actions">
-        <button type="button" className="button" onClick={() => downloadBlob(new Blob([text], { type: "application/xml" }), `scenario-v${versionNo}.xosc`)}>Tải tệp .xosc</button>
+        <button type="button" className="button" onClick={() => downloadBlob(new Blob([text], { type: "application/xml" }), fileName)}>Tải tệp .xosc</button>
       </div>
     </div>
   );

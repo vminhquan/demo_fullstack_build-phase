@@ -4,7 +4,7 @@ import secrets
 from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, Query, WebSocket, WebSocketDisconnect
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -14,7 +14,7 @@ from app.shared.config import get_settings
 from app.shared.domain.errors import Conflict, Forbidden, NotFound
 from app.shared.infrastructure.audit import record_audit
 from app.shared.infrastructure.db import SessionFactory, get_session
-from app.shared.infrastructure.models import RunJob, RunJobStatus, RunResult, RunVerdict, SuiteRunStatus, TestCase, TestCaseVersion, TestSuiteRun
+from app.shared.infrastructure.models import RunJob, RunJobStatus, RunResult, RunVerdict, SuiteRunStatus, TestCase, TestSuiteRun
 
 router = APIRouter(tags=["execution"])
 # CARLA worker endpoints: authenticated by X-Worker-Token, outside any project URL.
@@ -23,27 +23,26 @@ worker_router = APIRouter(tags=["execution-worker"])
 
 def serialize_result(result: RunResult | None) -> RunResultResponse | None:
     if result is None: return None
-    return RunResultResponse(id=result.id, run_job_id=result.run_job_id, test_case_version_id=result.test_case_version_id, verdict=result.verdict, metrics=result.metrics, scenario_runner_exit_code=result.scenario_runner_exit_code, duration_ms=result.duration_ms)
+    return RunResultResponse(id=result.id, run_job_id=result.run_job_id, test_case_id=result.test_case_id, revision=result.revision, verdict=result.verdict, metrics=result.metrics, scenario_runner_exit_code=result.scenario_runner_exit_code, duration_ms=result.duration_ms)
 
 
 def serialize_job(job: RunJob) -> RunJobResponse:
-    return RunJobResponse(id=job.id, suite_run_id=job.suite_run_id, test_case_version_id=job.test_case_version_id, status=job.status.value, worker_id=job.worker_id, attempt=job.attempt, error_code=job.error_code, error_message=job.error_message, result=serialize_result(job.result))
+    return RunJobResponse(id=job.id, suite_run_id=job.suite_run_id, test_case_id=job.test_case_id, status=job.status.value, worker_id=job.worker_id, attempt=job.attempt, error_code=job.error_code, error_message=job.error_message, result=serialize_result(job.result))
 
 
-def result_list_item(result: RunResult, version: TestCaseVersion, case: TestCase) -> RunResultListItem:
+def result_list_item(result: RunResult, case: TestCase) -> RunResultListItem:
     metrics = result.metrics or {}
     raw_ttc = metrics.get("min_ttc_seconds")
     return RunResultListItem(
         id=result.id,
         run_job_id=result.run_job_id,
-        test_case_version_id=result.test_case_version_id,
+        revision=result.revision,
         test_case_id=case.id,
         case_key=case.case_key,
         title=case.title,
-        version_no=version.version_no,
-        map_code=version.map_code,
-        adversary_type=version.adversary_type,
-        environment_code=version.environment_code,
+        map_code=case.map_code,
+        adversary_type=case.adversary_type,
+        environment_code=case.environment_code,
         verdict=result.verdict,
         metrics=metrics,
         scenario_runner_exit_code=result.scenario_runner_exit_code,
@@ -84,11 +83,17 @@ async def refresh_suite_status(session: AsyncSession, job: RunJob) -> None:
 
 async def claim_next(worker_id: str) -> RunJob | None:
     async with SessionFactory() as session:
-        job = await session.scalar(select(RunJob).where(RunJob.status == RunJobStatus.QUEUED).order_by(RunJob.queued_at, RunJob.id).with_for_update(skip_locked=True).limit(1))
+        # Jobs of Simulator Runner runs belong to their Bridge, not to this shared-token queue.
+        bridge_runs = select(TestSuiteRun.id).where(TestSuiteRun.bridge_connection_id.is_not(None))
+        job = await session.scalar(
+            select(RunJob)
+            .where(RunJob.status == RunJobStatus.QUEUED, or_(RunJob.suite_run_id.is_(None), RunJob.suite_run_id.not_in(bridge_runs)))
+            .order_by(RunJob.queued_at, RunJob.id).with_for_update(skip_locked=True).limit(1)
+        )
         if job is None: return None
         job.status, job.worker_id, job.claimed_at, job.attempt = RunJobStatus.CLAIMED, worker_id, datetime.now(UTC), job.attempt + 1
         await refresh_suite_status(session, job)
-        await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_CLAIMED", entity_type="RUN_JOB", entity_id=job.id, entity_version_id=job.test_case_version_id, after_data={"worker_id": worker_id})
+        await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_CLAIMED", entity_type="RUN_JOB", entity_id=job.id, after_data={"worker_id": worker_id})
         await session.commit()
         return job
 
@@ -122,9 +127,8 @@ async def list_results(
     session: AsyncSession = Depends(get_session),
 ) -> RunResultPage:
     statement = (
-        select(RunResult, TestCaseVersion, TestCase)
-        .join(TestCaseVersion, RunResult.test_case_version_id == TestCaseVersion.id)
-        .join(TestCase, TestCaseVersion.test_case_id == TestCase.id)
+        select(RunResult, TestCase)
+        .join(TestCase, RunResult.test_case_id == TestCase.id)
         .where(RunResult.project_id == actor.project_id, TestCase.archived_at.is_(None))
         .order_by(RunResult.created_at.desc())
     )
@@ -133,7 +137,7 @@ async def list_results(
     rows = (await session.execute(statement)).tuples().all()
     start = (page - 1) * page_size
     return RunResultPage(
-        items=[result_list_item(result, version, case) for result, version, case in rows[start:start + page_size]],
+        items=[result_list_item(result, case) for result, case in rows[start:start + page_size]],
         page=page,
         page_size=page_size,
         total=len(rows),
@@ -146,7 +150,7 @@ async def cancel_job(job_id: int, actor: Principal = Depends(require("suite:run"
     if job.status not in {RunJobStatus.QUEUED, RunJobStatus.CLAIMED}: raise Conflict("Only queued or claimed jobs can be cancelled")
     job.status, job.finished_at = RunJobStatus.CANCELLED, datetime.now(UTC)
     await refresh_suite_status(session, job)
-    await record_audit(session, project_id=actor.project_id, actor_user_id=actor.id, action="RUN_JOB_CANCELLED", entity_type="RUN_JOB", entity_id=job.id, entity_version_id=job.test_case_version_id)
+    await record_audit(session, project_id=actor.project_id, actor_user_id=actor.id, action="RUN_JOB_CANCELLED", entity_type="RUN_JOB", entity_id=job.id)
     await session.commit()
     return serialize_job(job)
 
@@ -156,7 +160,7 @@ async def next_job(x_worker_token: str | None = Header(default=None), x_worker_i
     verify_worker_token(x_worker_token)
     job = await claim_next(x_worker_id)
     if job is None: return {"job": None}
-    return {"job": {"id": job.id, "project_id": job.project_id, "test_case_version_id": job.test_case_version_id, "attempt": job.attempt}}
+    return {"job": {"id": job.id, "project_id": job.project_id, "test_case_id": job.test_case_id, "attempt": job.attempt}}
 
 
 @worker_router.post("/integration/worker/jobs/{job_id}/started")
@@ -165,7 +169,7 @@ async def worker_started(job_id: int, x_worker_token: str | None = Header(defaul
     job = await get_job(session, job_id, locked=True)
     if job.status is RunJobStatus.CLAIMED:
         job.status, job.started_at = RunJobStatus.RUNNING, datetime.now(UTC)
-        await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_STARTED", entity_type="RUN_JOB", entity_id=job.id, entity_version_id=job.test_case_version_id)
+        await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_STARTED", entity_type="RUN_JOB", entity_id=job.id)
         await session.commit()
     return {"job_id": job.id, "status": job.status.value}
 
@@ -177,11 +181,15 @@ async def worker_completed(job_id: int, body: WorkerCompleteRequest, x_worker_to
     if job.result is not None: return serialize_job(job)  # idempotent worker retry
     if job.status not in {RunJobStatus.CLAIMED, RunJobStatus.RUNNING}: raise Conflict("Job cannot be completed from current state")
     job.status, job.finished_at = RunJobStatus.COMPLETED, datetime.now(UTC)
-    result = RunResult(project_id=job.project_id, run_job_id=job.id, test_case_version_id=job.test_case_version_id, verdict=body.verdict, metrics=body.metrics, scenario_runner_exit_code=body.scenario_runner_exit_code, duration_ms=body.duration_ms)
+    case = await session.get(TestCase, job.test_case_id)
+    # The case is locked since it entered the run, so its current configuration is what was executed.
+    result = RunResult(project_id=job.project_id, run_job_id=job.id, test_case_id=job.test_case_id,
+                       revision=case.revision if case else None, config_sha256=case.config_sha256 if case else None,
+                       xosc_sha256=case.xosc_sha256 if case else None, verdict=body.verdict, metrics=body.metrics, scenario_runner_exit_code=body.scenario_runner_exit_code, duration_ms=body.duration_ms)
     session.add(result)
     await session.flush()
     await refresh_suite_status(session, job)
-    await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_COMPLETED", entity_type="RUN_JOB", entity_id=job.id, entity_version_id=job.test_case_version_id, after_data={"verdict": body.verdict.value})
+    await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_COMPLETED", entity_type="RUN_JOB", entity_id=job.id, after_data={"verdict": body.verdict.value})
     await session.commit()
     await session.refresh(job, attribute_names=["result"])
     return serialize_job(job)
@@ -195,7 +203,7 @@ async def worker_failed(job_id: int, body: WorkerFailedRequest, x_worker_token: 
     if job.status not in {RunJobStatus.CLAIMED, RunJobStatus.RUNNING}: raise Conflict("Job cannot fail from current state")
     job.status, job.finished_at, job.error_code, job.error_message = RunJobStatus.FAILED, datetime.now(UTC), body.error_code, body.error_message
     await refresh_suite_status(session, job)
-    await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_FAILED", entity_type="RUN_JOB", entity_id=job.id, entity_version_id=job.test_case_version_id, after_data={"error_code": body.error_code})
+    await record_audit(session, project_id=job.project_id, actor_user_id=None, action="RUN_JOB_FAILED", entity_type="RUN_JOB", entity_id=job.id, after_data={"error_code": body.error_code})
     await session.commit()
     return serialize_job(job)
 
@@ -216,7 +224,7 @@ async def worker_websocket(websocket: WebSocket) -> None:
                 await websocket.send_json({"type": "worker.hello.ack"})
             elif message_type == "job.next":
                 job = await claim_next(worker_id)
-                await websocket.send_json({"type": "job.assigned", "job": None if job is None else {"id": job.id, "project_id": job.project_id, "test_case_version_id": job.test_case_version_id, "attempt": job.attempt}})
+                await websocket.send_json({"type": "job.assigned", "job": None if job is None else {"id": job.id, "project_id": job.project_id, "test_case_id": job.test_case_id, "attempt": job.attempt}})
             elif message_type == "worker.heartbeat":
                 await websocket.send_json({"type": "worker.heartbeat.ack"})
             elif message_type == "catalog.sync":

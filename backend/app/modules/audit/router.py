@@ -13,10 +13,8 @@ from app.shared.infrastructure.db import get_session
 from app.shared.infrastructure.models import (
     AuditLog,
     Project,
-    ReviewRequest,
     RunJob,
     TestCase,
-    TestCaseVersion,
     TestSuite,
     TestSuiteRun,
     User,
@@ -43,17 +41,6 @@ class AuditLogResponse(BaseModel):
     before_data: dict | None
     after_data: dict | None
     created_at: datetime
-
-
-async def _version_labels(session: AsyncSession, version_ids: set[int]) -> dict[int, str]:
-    if not version_ids:
-        return {}
-    rows = await session.execute(
-        select(TestCaseVersion.id, TestCaseVersion.version_no, TestCase.case_key, TestCase.title)
-        .join(TestCase, TestCase.id == TestCaseVersion.test_case_id)
-        .where(TestCaseVersion.id.in_(version_ids))
-    )
-    return {row.id: f"{row.case_key} · {row.title} (phiên bản {row.version_no})" for row in rows}
 
 
 async def _entity_labels(session: AsyncSession, logs: list[AuditLog]) -> dict[tuple[str, int], str]:
@@ -91,31 +78,18 @@ async def _entity_labels(session: AsyncSession, logs: list[AuditLog]) -> dict[tu
         ):
             labels[("TEST_SUITE_RUN", row.id)] = f"Lượt chạy bộ “{row.name}”"
 
-    # Reviews and run jobs are described through the test case version they concern.
-    review_versions = {
-        row.id: row.version_id
-        for row in await session.execute(
-            select(ReviewRequest.id, ReviewRequest.version_id).where(ReviewRequest.id.in_(ids["REVIEW_REQUEST"]))
-        )
-    } if ids["REVIEW_REQUEST"] else {}
-    job_versions = {
-        row.id: row.test_case_version_id
-        for row in await session.execute(
-            select(RunJob.id, RunJob.test_case_version_id).where(RunJob.id.in_(ids["RUN_JOB"]))
-        )
+    # Run jobs are described through the test case they ran.
+    job_cases = {
+        row.id: row.test_case_id
+        for row in await session.execute(select(RunJob.id, RunJob.test_case_id).where(RunJob.id.in_(ids["RUN_JOB"])))
     } if ids["RUN_JOB"] else {}
-    versions = await _version_labels(
-        session, ids["TEST_CASE_VERSION"] | set(review_versions.values()) | set(job_versions.values())
-    )
-    for version_id in ids["TEST_CASE_VERSION"]:
-        if version_id in versions:
-            labels[("TEST_CASE_VERSION", version_id)] = versions[version_id]
-    for review_id, version_id in review_versions.items():
-        if version_id in versions:
-            labels[("REVIEW_REQUEST", review_id)] = versions[version_id]
-    for job_id, version_id in job_versions.items():
-        if version_id in versions:
-            labels[("RUN_JOB", job_id)] = versions[version_id]
+    if job_cases:
+        for row in await session.execute(
+            select(TestCase.id, TestCase.case_key, TestCase.title).where(TestCase.id.in_(set(job_cases.values())))
+        ):
+            for job_id, case_id in job_cases.items():
+                if case_id == row.id:
+                    labels[("RUN_JOB", job_id)] = f"{row.case_key} · {row.title}"
     return labels
 
 

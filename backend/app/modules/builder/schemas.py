@@ -54,7 +54,7 @@ class BuilderSessionSummary(BaseModel):
     status: BuilderSessionStatus
     succeeded_count: int
     failed_count: int
-    # Saved test cases whose latest version is neither APPROVED nor REJECTED (same rule as the detail page).
+    # Saved test cases still waiting for a reviewer (status PENDING).
     pending_count: int = 0
     created_by: int
     created_by_name: str | None = None

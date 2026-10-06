@@ -22,7 +22,8 @@ class WorkerFailedRequest(BaseModel):
 class RunResultResponse(BaseModel):
     id: int
     run_job_id: int
-    test_case_version_id: int
+    test_case_id: int
+    revision: int | None = None
     verdict: RunVerdict
     metrics: dict[str, Any]
     scenario_runner_exit_code: int | None
@@ -30,10 +31,8 @@ class RunResultResponse(BaseModel):
 
 
 class RunResultListItem(RunResultResponse):
-    test_case_id: int
     case_key: str
     title: str
-    version_no: int
     map_code: str
     adversary_type: str
     environment_code: str
@@ -52,7 +51,7 @@ class RunResultPage(BaseModel):
 class RunJobResponse(BaseModel):
     id: int
     suite_run_id: int | None
-    test_case_version_id: int
+    test_case_id: int
     status: str
     worker_id: str | None
     attempt: int

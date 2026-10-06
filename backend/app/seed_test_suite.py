@@ -13,21 +13,17 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from app.shared.infrastructure.db import SessionFactory
+from app.modules.testcase.service import config_sha256
 from app.shared.infrastructure.models import (
-    CommentType,
     DangerLevel,
     Project,
     ProjectStatus,
-    ReviewComment,
-    ReviewDecision,
-    ReviewRequest,
     Tag,
     TestCase,
-    TestCaseVersion,
-    VersionStatus,
+    TestCaseDecision,
+    TestCaseDecisionValue,
+    TestCaseStatus,
 )
-
-SEED_NOTE = "seed:test-suite"
 
 # (title, description, map, ego, adversary, environment, danger, tags)
 CASES: list[tuple[str, str, str, str, str, str, DangerLevel, list[str]]] = [
@@ -80,58 +76,37 @@ async def seed_project(session, project: Project) -> int:
         if title in existing:
             continue
         decided_at = now - timedelta(days=index % 12, hours=index * 3 % 24)
-        submitted_at = decided_at - timedelta(hours=2)
         case = TestCase(
             project_id=project.id,
             case_key=f"TEMP-{secrets.token_hex(8).upper()}",
             title=title,
             description=description,
-            created_by=project.created_by,
-            versions=[],
-        )
-        session.add(case)
-        await session.flush()
-        case.case_key = f"TC-{case.id:06d}"
-        version = TestCaseVersion(
-            project_id=project.id,
-            test_case_id=case.id,
-            version_no=1,
-            status=VersionStatus.APPROVED,
+            status=TestCaseStatus.APPROVED,
             map_code=map_code,
             ego_vehicle_code=ego,
             adversary_type=adversary,
             environment_code=environment,
             danger_level=danger,
-            scenario_input={},
-            change_note=SEED_NOTE,
+            scenario_input={"source": "SEED"},
+            revision=1,
             created_by=project.created_by,
-            submitted_at=submitted_at,
             decided_at=decided_at,
             decided_by=project.created_by,
             tags=[await tag_for(session, project.id, name, tags) for name in tag_names],
         )
-        session.add(version)
+        session.add(case)
         await session.flush()
-        review = ReviewRequest(
+        case.case_key = f"TC-{case.id:06d}"
+        case.config_sha256 = config_sha256(case)
+        session.add(TestCaseDecision(
             project_id=project.id,
-            version_id=version.id,
-            requested_by=project.created_by,
-            requested_at=submitted_at,
-            resolved_by=project.created_by,
-            resolved_at=decided_at,
-            decision=ReviewDecision.APPROVED,
-        )
-        session.add(review)
-        await session.flush()
-        session.add(
-            ReviewComment(
-                project_id=project.id,
-                review_request_id=review.id,
-                creator_id=project.created_by,
-                body="Dữ liệu mẫu: đã duyệt.",
-                comment_type=CommentType.DECISION,
-            )
-        )
+            test_case_id=case.id,
+            decision=TestCaseDecisionValue.APPROVED,
+            revision=1,
+            config_sha256=case.config_sha256,
+            decided_by=project.created_by,
+            created_at=decided_at,
+        ))
         created += 1
     return created
 

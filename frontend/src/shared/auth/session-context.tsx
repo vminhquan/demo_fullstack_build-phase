@@ -2,7 +2,7 @@
 
 import { createContext, ReactNode, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { api, ApiError, Responsibility, Role, Session, User } from "@/lib/api";
+import { api, ApiError, TestCaseStatus, Responsibility, Role, Session, User } from "@/lib/api";
 
 const SESSION_KEY = "scenario-forge.session";
 const REFRESH_WINDOW_MS = 90_000;
@@ -187,7 +187,7 @@ export const labels = {
     TESTCASE_REVIEW: "Duyệt test case",
     TESTCASE_SELF_REVIEW: "Tự duyệt test case của mình",
   } as Record<Responsibility, string>,
-  status: { DRAFT: "Bản nháp", IN_REVIEW: "Đang chờ duyệt", EDIT: "Cần chỉnh sửa", APPROVED: "Đã phê duyệt", REJECTED: "Đã từ chối" },
+  status: { PENDING: "Chờ duyệt", APPROVED: "Đã phê duyệt", REJECTED: "Không phê duyệt", DISCARDED: "Đã loại bỏ" } as Record<TestCaseStatus, string>,
   danger: { LOW: "Thấp", MEDIUM: "Trung bình", HIGH: "Cao", CRITICAL: "Nghiêm trọng" },
   run: { QUEUED: "Đang xếp hàng", CLAIMED: "Đã nhận", RUNNING: "Đang chạy", COMPLETED: "Hoàn tất", FAILED: "Thất bại", CANCELLED: "Đã hủy" },
   verdict: { PASS: "Đạt", FAIL: "Không đạt", ERROR: "Lỗi" },
