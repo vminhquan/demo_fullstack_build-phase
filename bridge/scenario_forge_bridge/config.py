@@ -44,6 +44,7 @@ class BridgeConfig:
     runner_python: str = ""
     runner_root: str = ""   # folder holding scenario_runner.py
     carla_root: str = ""    # CARLA install; PythonAPI/carla provides the `agents` package
+    carla_version: str = ""  # CARLA server version the runner was set up for (`setup-runner`)
     camera: str = "follow"  # follow: move the CARLA window camera onto the ego during a run; off: leave it
     connections: list[Connection] = field(default_factory=list)
 

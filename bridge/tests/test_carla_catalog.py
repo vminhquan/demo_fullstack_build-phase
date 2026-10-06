@@ -75,5 +75,5 @@ def test_map_filter(fake_carla) -> None:
 
 def test_missing_carla_package_is_explained(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "carla", None)
-    with pytest.raises(carla_catalog.CarlaUnavailable, match="pipx inject"):
+    with pytest.raises(carla_catalog.CarlaUnavailable, match="setup-runner"):
         list(carla_catalog.collect("127.0.0.1", 2000))

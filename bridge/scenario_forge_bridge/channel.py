@@ -11,9 +11,9 @@ from collections.abc import Callable
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidURI
 
-from scenario_forge_bridge import api
+from scenario_forge_bridge import api, runtime
 from scenario_forge_bridge import config as config_store
-from scenario_forge_bridge.carla_catalog import CarlaUnavailable, collect
+from scenario_forge_bridge.carla_catalog import CarlaUnavailable
 from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.config import BridgeConfig, Connection
 from scenario_forge_bridge.runner import RunExecutor, runner_problems
@@ -52,7 +52,7 @@ async def _sync_catalog(ws: ClientConnection, cfg: BridgeConfig, token: str, mes
     def worker() -> None:
         # Runs in a thread: CARLA calls block (loading a map takes seconds to minutes).
         try:
-            for result in collect(cfg.carla_host, cfg.carla_port, maps=message.get("maps"),
+            for result in runtime.collect(cfg, maps=message.get("maps"),
                                   on_loading=lambda i, n, name: loop.call_soon_threadsafe(events.put_nowait, ("loading", i, n, name))):
                 loop.call_soon_threadsafe(events.put_nowait, ("result", result))
         except CarlaUnavailable as exc:

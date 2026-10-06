@@ -10,10 +10,8 @@ import asyncio
 import hashlib
 import json
 import math
-import os
 import shutil
 import subprocess
-import sys
 import time
 import xml.etree.ElementTree as ET
 from collections.abc import Awaitable, Callable
@@ -21,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scenario_forge_bridge import config as config_store
+from scenario_forge_bridge import runtime
 from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.config import BridgeConfig
 
@@ -104,35 +103,33 @@ def runner_problems(cfg: BridgeConfig) -> list[str]:
     """What is missing to run scenarios (empty list = ready). CARLA itself is checked per test case."""
     problems = []
     if not cfg.runner_python:
-        problems.append("Chưa cấu hình runner_python (sfbridge config --runner-python <python có carla + ScenarioRunner>)")
+        problems.append("Chưa cài môi trường chạy test: chạy `scenario-forge-bridge setup-runner`")
     elif not Path(cfg.runner_python).is_file():
         problems.append(f"Không thấy runner_python: {cfg.runner_python}")
     if not cfg.runner_root:
-        problems.append("Chưa cấu hình runner_root (sfbridge config --runner-root <thư mục scenario_runner>)")
+        problems.append("Chưa có ScenarioRunner: chạy `scenario-forge-bridge setup-runner`")
     elif not Path(cfg.runner_root, "scenario_runner.py").is_file():
         problems.append(f"Không thấy scenario_runner.py trong {cfg.runner_root}")
-    if cfg.carla_root and not Path(cfg.carla_root, "PythonAPI", "carla", "agents").is_dir():
+    if not cfg.carla_root:
+        problems.append("Chưa biết thư mục CARLA (cần PythonAPI/carla/agents): chạy `scenario-forge-bridge setup-runner --carla-root <thư mục>`")
+    elif not Path(cfg.carla_root, "PythonAPI", "carla", "agents").is_dir():
         problems.append(f"Không thấy PythonAPI/carla/agents trong carla_root {cfg.carla_root}")
     return problems
 
 
+def version_mismatch(cfg: BridgeConfig) -> str | None:
+    """Message when the running CARLA server is not the version the runner was set up for (None = fine or unknown)."""
+    if not cfg.carla_version or not cfg.runner_python:
+        return None
+    actual = runtime.server_version(cfg.runner_python, cfg.carla_host, cfg.carla_port, cfg.carla_root or None)
+    if actual and actual != cfg.carla_version:
+        return (f"Bridge được cài cho CARLA {cfg.carla_version} nhưng máy đang chạy CARLA {actual}. "
+                f"Chạy lại `scenario-forge-bridge setup-runner` và chọn CARLA {actual}.")
+    return None
+
+
 def child_env(cfg: BridgeConfig) -> dict[str, str]:
-    env = os.environ.copy()
-    if getattr(sys, "frozen", False):
-        # PyInstaller points LD_LIBRARY_PATH at its own bundle; the runner Python needs the system one.
-        original = env.pop("LD_LIBRARY_PATH_ORIG", None)
-        if original is None:
-            env.pop("LD_LIBRARY_PATH", None)
-        else:
-            env["LD_LIBRARY_PATH"] = original
-    if cfg.carla_root:
-        # ScenarioRunner imports `agents.navigation…`, which ships in CARLA's PythonAPI/carla folder.
-        agents = str(Path(cfg.carla_root, "PythonAPI", "carla"))
-        env["PYTHONPATH"] = os.pathsep.join(filter(None, [agents, env.get("PYTHONPATH")]))
-        env["CARLA_ROOT"] = cfg.carla_root
-    env["SCENARIO_RUNNER_ROOT"] = cfg.runner_root
-    env["PYTHONUNBUFFERED"] = "1"
-    return env
+    return runtime.runner_env(cfg.carla_root or None, cfg.runner_root)
 
 
 # ---------------------------------------------------------------- XOSC and results
@@ -400,6 +397,11 @@ class RunExecutor:
         if problems:
             self.log("Không chạy được phiên " + str(run_id) + ": " + "; ".join(problems))
             await self.report({"type": "run.rejected", "run_id": run_id, "reason": "RUNNER_NOT_READY", "message": "\n".join(problems)[:4000]})
+            return
+        mismatch = await asyncio.to_thread(version_mismatch, self.cfg)
+        if mismatch:
+            self.log(f"Không chạy được phiên {run_id}: {mismatch}")
+            await self.report({"type": "run.rejected", "run_id": run_id, "reason": "CARLA_VERSION_MISMATCH", "message": mismatch})
             return
         await self.send({"type": "run.accepted", "run_id": run_id})
         count = len(message.get("test_cases") or [])

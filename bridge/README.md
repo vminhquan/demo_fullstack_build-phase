@@ -26,36 +26,67 @@ Web và Bridge hiển thị **cùng một mã kết nối** (`CONN-…`). Một 
 
 ## Cài đặt
 
-### Cách 1: file chạy đóng gói sẵn (người dùng cuối)
-
-Build trên đúng hệ điều hành đích, vì PyInstaller không build chéo:
+### Cách 1: lệnh cài trên trang Start up (người dùng cuối)
 
 ```bash
-# Ubuntu
-./scripts/build.sh                 # tạo dist/scenario-forge-bridge
-./scripts/install.sh               # chép vào ~/.local/bin
+curl -LsSf https://<web>/bridge/install.sh | sh          # Ubuntu
 ```
-
 ```powershell
-# Windows (PowerShell)
-.\scripts\build.ps1                # tạo dist\scenario-forge-bridge.exe
+irm https://<web>/bridge/install.ps1 | iex               # Windows PowerShell
 ```
 
-### Cách 2: từ mã nguồn (Python 3.10+)
+Script (`frontend/public/bridge/install.{sh,ps1}`) cài `uv`, cài CLI bằng `uv tool install` (Python ≥ 3.10 bất kỳ), rồi chạy
+`setup-runner`, màn hình này hỏi phiên bản CARLA server:
+
+```
+Scenario Forge Bridge · Chọn phiên bản CARLA server trên máy này
+(↑/↓ để chọn, Enter để xác nhận)
+
+ ❯ CARLA 0.9.16
+   CARLA 0.9.15
+   Tự động phát hiện  (CARLA phải đang chạy)
+```
+
+Không có màn hình (SSH, cài tự động): `SF_CARLA=0.9.16` (hoặc `auto`), thêm `SF_CARLA_ROOT=<thư mục CARLA>` nếu CARLA không nằm ở
+chỗ quen thuộc. Chạy lại lệnh cài để cập nhật.
+
+### Môi trường chạy test (runner) Bridge tự quản lý
+
+Bridge **không import `carla`**: mọi lệnh tới CARLA (ScenarioRunner, camera, đồng bộ catalog) chạy trong một Python riêng do
+`setup-runner` tạo, nên CLI chạy trên Python nào cũng được và không đụng Python / CARLA của máy.
+
+```
+<thư mục cấu hình>/runtime/<phiên bản CARLA>/
+  venv/             Python theo bảng RUNNERS (uv tự tải)
+  scenario_runner/  ScenarioRunner đúng tag, đã vá
+```
+
+| CARLA | ScenarioRunner | Python runner | Bản vá |
+|---|---|---|---|
+| 0.9.16 | v0.9.16 | 3.10 | `times_none`, `self_reset` |
+| 0.9.15 | v0.9.15 | 3.8 (thư viện của tag này chỉ có tới cp38) | `self_reset` |
+
+Thư viện client `carla` lấy từ chính thư mục CARLA của máy (`PythonAPI/carla/dist/carla-<ver>-cp<py>-…whl`, luôn khớp server),
+không có thì từ PyPI. Thêm phiên bản: một dòng trong `RUNNERS` (`runtime.py`) sau khi đã chạy thử trên máy thật.
+Lúc nhận phiên chạy, Bridge hỏi phiên bản server: khác bản đã chọn → `run.rejected CARLA_VERSION_MISMATCH`, chạy lại `setup-runner`.
+
+### Cách 2: file chạy đóng gói sẵn (PyInstaller)
+
+Build trên đúng hệ điều hành đích, vì PyInstaller không build chéo: `./scripts/build.sh` (Ubuntu) hoặc `.\scripts\build.ps1` (Windows),
+rồi `scenario-forge-bridge setup-runner`. Cần `uv` trên máy để tạo runner.
+
+### Cách 3: từ mã nguồn
 
 ```bash
-pipx install ./bridge              # hoặc: python -m pip install ./bridge
+uv tool install ./bridge           # hoặc: pipx install ./bridge
+scenario-forge-bridge setup-runner
 ```
 
 Ubuntu không có giao diện (server) thường không có Secret Service, nên device token được lưu vào file `~/.config/scenario-forge-bridge/device-token` (quyền 600). Windows lưu token trong Credential Manager.
 
 ## Đồng bộ dữ liệu CARLA
 
-Cần gói Python `carla` **đúng phiên bản với CARLA server** (cài vào cùng môi trường với Bridge):
-
-```bash
-pipx inject scenario-forge-bridge carla==0.9.16    # đổi theo phiên bản CARLA của bạn
-```
+Đọc CARLA trong Python của runner (`setup-runner`): không cần cài thêm gì.
 
 Trên trang Start up bấm **Đồng bộ dữ liệu CARLA** ở Bridge đang Online (hoặc gõ `scenario-forge-bridge sync`). Bridge:
 
@@ -79,25 +110,10 @@ Web chọn test case → Simulator Runner → chọn Bridge. Backend gửi `run.
 từng test case bằng ScenarioRunner trong một tiến trình con rồi trả `job.started` → `job.completed | job.failed` → `run.completed`
 (hợp đồng: `docs/21-simulator-runner-bridge.md`).
 
-### Chuẩn bị máy (một lần, ví dụ CARLA 0.9.16 trên Ubuntu / Linux Mint)
+### Chuẩn bị máy
 
-```bash
-# Python 3.10 hoặc 3.11 (numpy==1.24.4 của ScenarioRunner không có bản cho 3.12). Không có thì dùng uv:
-curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
-uv venv --python 3.10 ~/sr-venv
-
-git clone -b v0.9.16 --depth 1 https://github.com/carla-simulator/scenario_runner.git ~/scenario_runner
-uv pip install --python ~/sr-venv/bin/python carla==0.9.16 -r ~/scenario_runner/requirements.txt
-
-# Hai bản vá cho lỗi của ScenarioRunner v0.9.16 khi xe ego có AssignRouteAction
-F=~/scenario_runner/srunner/scenariomanager/scenarioatomics/atomic_behaviors.py
-sed -i 's/        if len(self._waypoints) != len(self._times):/        if self._times is not None and len(self._waypoints) != len(self._times):/' $F
-sed -i 's/^                actor_dict\[self._actor.id\].reset()$/                if actor_dict[self._actor.id] is not self._actor_control:\n                    actor_dict[self._actor.id].reset()/' $F
-
-# Cho Bridge biết dùng gì
-scenario-forge-bridge config --runner-python ~/sr-venv/bin/python --runner-root ~/scenario_runner --carla-root ~/CARLA_0.9.16
-scenario-forge-bridge status      # dòng "Runner : sẵn sàng"
-```
+Lệnh cài ở trên đã chuẩn bị runner. Kiểm tra: `scenario-forge-bridge status` có dòng "Runner : sẵn sàng · CARLA 0.9.16".
+Cấu hình tay (dùng runner tự dựng) vẫn được: `config --runner-python … --runner-root … --carla-root …`.
 
 Mở CARLA **có cửa sổ** (`./CarlaUE4.sh`) rồi `scenario-forge-bridge run`. Khi chạy test, camera cửa sổ CARLA tự bám xe ego và lùi ra
 để thấy cả hai xe lúc sắp va chạm (`config --camera off` để tắt).
@@ -126,6 +142,8 @@ Thiếu cấu hình runner → cả phiên bị từ chối `RUNNER_NOT_READY` k
 scenario-forge-bridge pair 482913 --server https://forge.example.com/api/v1   # ghép, rồi giữ kết nối (Ctrl+C để dừng)
 scenario-forge-bridge pair 482913 --no-run                                     # chỉ ghép, không giữ kết nối
 scenario-forge-bridge run                 # giữ Bridge trực tuyến, tự kết nối lại khi mất mạng
+scenario-forge-bridge setup-runner        # chọn phiên bản CARLA (menu) và chuẩn bị môi trường chạy test
+scenario-forge-bridge setup-runner --carla 0.9.16 --carla-root ~/CARLA_0.9.16   # không cần menu
 scenario-forge-bridge status              # máy chủ, Bridge, các Project đã ghép, trạng thái CARLA
 scenario-forge-bridge check-carla         # mã thoát 0 = CARLA đang chạy ở 127.0.0.1:2000, 2 = chưa
 scenario-forge-bridge sync                # đọc mọi map của CARLA và gửi lên mọi Project đã ghép

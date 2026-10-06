@@ -3,18 +3,20 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
 
 import typer
 
-from scenario_forge_bridge import __version__, api, credentials, machine
+from scenario_forge_bridge import __version__, api, credentials, machine, runtime
 from scenario_forge_bridge import config as config_store
-from scenario_forge_bridge.carla_catalog import CarlaUnavailable, collect
+from scenario_forge_bridge.carla_catalog import CarlaUnavailable
 from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.channel import ChannelRejected
 from scenario_forge_bridge.channel import run as run_channel
 from scenario_forge_bridge.config import Connection
-from scenario_forge_bridge.runner import runner_problems
+from scenario_forge_bridge.runner import runner_problems, version_mismatch
 
 app = typer.Typer(
     add_completion=False,
@@ -139,9 +141,13 @@ def status() -> None:
     typer.echo(f"CARLA        : {probe.host}:{probe.port} {carla}")
     problems = runner_problems(cfg)
     state = "sẵn sàng" if not problems else "chưa sẵn sàng"
-    typer.echo(f"Runner       : {state} · python={cfg.runner_python or '—'} · scenario_runner={cfg.runner_root or '—'}")
+    typer.echo(f"Runner       : {state} · CARLA {cfg.carla_version or '—'} · python={cfg.runner_python or '—'}")
     for problem in problems:
         typer.echo(f"  - {problem}")
+    if probe.reachable and not problems:
+        mismatch = version_mismatch(cfg)
+        if mismatch:
+            typer.secho(f"  ! {mismatch}", fg=typer.colors.YELLOW)
     typer.echo(f"Camera       : {cfg.camera}")
     if not cfg.connections:
         typer.echo("Project      : chưa ghép project nào")
@@ -149,6 +155,120 @@ def status() -> None:
     typer.echo("Project      :")
     for item in cfg.connections:
         typer.echo(f"  - {item.project_name} (#{item.project_id}) · {item.connection_uid} · ghép lúc {item.paired_at}")
+
+
+AUTO = "auto"
+
+
+class DetectFailed(Exception):
+    """Auto-detect could not settle on a CARLA version: the menu is shown again."""
+
+
+def _interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _choose_version() -> str:
+    import questionary
+
+    typer.echo("Scenario Forge Bridge · Chọn phiên bản CARLA server trên máy này")
+    typer.echo("(↑/↓ để chọn, Enter để xác nhận)")
+    choices = [questionary.Choice(f"CARLA {version}", value=version) for version in runtime.RUNNERS]
+    choices.append(questionary.Choice("Tự động phát hiện  (CARLA phải đang chạy)", value=AUTO))
+    answer = questionary.select("", choices=choices, qmark="", instruction=" ", pointer="❯").ask()
+    if answer is None:  # Ctrl+C
+        raise typer.Exit(1)
+    return answer
+
+
+def _auto_detect(cfg, roots: list[Path]) -> tuple[str, Path | None]:
+    probe = probe_carla(cfg.carla_host, cfg.carla_port)
+    if not probe.reachable:
+        raise DetectFailed(f"CARLA chưa chạy ở {probe.host}:{probe.port}. Mở CARLA rồi chọn lại, hoặc chọn phiên bản trong danh sách.")
+    running = runtime.running_carla_root()
+    if running and runtime.carla_version_of(running):
+        return runtime.carla_version_of(running), running
+    # A runner set up earlier can ask the server itself.
+    for known in runtime.RUNNERS:
+        python = runtime.venv_python(runtime.runtime_dir(known) / "venv")
+        if python.is_file():
+            actual = runtime.server_version(str(python), cfg.carla_host, cfg.carla_port)
+            if actual:
+                return actual, next((root for root in roots if runtime.carla_version_of(root) == actual), None)
+    versions = {runtime.carla_version_of(root) for root in roots} - {None}
+    if len(versions) == 1:
+        version = versions.pop()
+        return version, next(root for root in roots if runtime.carla_version_of(root) == version)
+    raise DetectFailed("Không tự xác định được phiên bản CARLA đang chạy. Hãy chọn phiên bản trong danh sách.")
+
+
+def _pick_root(version: str, roots: list[Path], interactive: bool) -> Path | None:
+    """The CARLA folder of `version` (its PythonAPI/carla/agents is needed by ScenarioRunner)."""
+    matching = [root for root in roots if runtime.carla_version_of(root) == version]
+    if matching:
+        return matching[0]
+    for root in roots:
+        typer.secho(f"Thư mục {root} là CARLA {runtime.carla_version_of(root) or '?'}, không phải {version}.", fg=typer.colors.YELLOW)
+    if not interactive:
+        return None
+    import questionary
+
+    while True:
+        answer = questionary.path(f"Thư mục cài CARLA {version} (Enter để bỏ qua):", only_directories=True, qmark="").ask()
+        if not answer:
+            return None
+        root = Path(answer).expanduser().resolve()
+        if runtime.is_carla_root(root):
+            return root
+        typer.secho(f"{root} không có PythonAPI/carla/agents: chưa phải thư mục CARLA.", fg=typer.colors.RED)
+
+
+@app.command("setup-runner")
+def setup_runner(
+    carla: str = typer.Option(None, "--carla", help=f"Phiên bản CARLA server: {', '.join(runtime.RUNNERS)} hoặc auto. Bỏ trống để chọn trong menu."),
+    carla_root: str = typer.Option(None, "--carla-root", help="Thư mục cài CARLA (mặc định: tự tìm)."),
+) -> None:
+    """Chuẩn bị môi trường chạy test case trên CARLA (Python, ScenarioRunner) cho đúng phiên bản CARLA của máy này."""
+    cfg = config_store.load()
+    interactive = _interactive()
+    if carla is None and not interactive:
+        fail(f"Không có màn hình để chọn: thêm --carla <{'|'.join(runtime.RUNNERS)}|auto>.")
+    if carla and carla != AUTO and carla not in runtime.RUNNERS:
+        fail(f"CARLA {carla} chưa được hỗ trợ (hỗ trợ: {', '.join(runtime.RUNNERS)}).")
+    roots = runtime.find_carla_roots(carla_root)
+    while True:
+        choice = carla or _choose_version()
+        try:
+            if choice == AUTO:
+                version, root = _auto_detect(cfg, roots)
+                if version not in runtime.RUNNERS:
+                    raise DetectFailed(f"Máy đang chạy CARLA {version}: phiên bản này chưa được hỗ trợ.")
+                ok(f"Phát hiện CARLA {version}" + (f" ở {root}" if root else ""))
+            else:
+                version, root = choice, None
+            break
+        except DetectFailed as exc:
+            typer.secho(str(exc), fg=typer.colors.YELLOW)
+            if carla or not interactive:
+                raise typer.Exit(2) from exc
+    root = root or _pick_root(version, roots, interactive)
+    if root is None:
+        typer.secho("Chưa có thư mục CARLA: cài xong nhưng chưa chạy được test. Chạy lại với --carla-root <thư mục CARLA>.",
+                    fg=typer.colors.YELLOW)
+    typer.echo(f"Chuẩn bị môi trường cho CARLA {version} (một lần, vài phút)…")
+    try:
+        cfg = runtime.install(version, root, log)
+    except runtime.SetupFailed as exc:
+        fail(str(exc))
+    if root is None:
+        typer.secho(f"Đã cài môi trường CARLA {version}, nhưng còn thiếu thư mục CARLA nên chưa chạy được test. "
+                    f"Chạy lại: scenario-forge-bridge setup-runner --carla {version} --carla-root <thư mục CARLA>", fg=typer.colors.YELLOW)
+    else:
+        ok(f"Đã sẵn sàng chạy test case trên CARLA {version}.")
+    if not credentials.load_token():
+        typer.echo("Tiếp theo: lấy mã 6 số ở trang Start up rồi chạy  scenario-forge-bridge pair <mã>")
+    else:
+        typer.echo("Tiếp theo: scenario-forge-bridge run")
 
 
 @app.command("check-carla")
@@ -187,7 +307,7 @@ def sync(
     typer.secho("Lưu ý: Bridge sẽ lần lượt mở từng map trong CARLA rồi mở lại map hiện tại khi xong.", fg=typer.colors.YELLOW)
     synced = failed = 0
     try:
-        for result in collect(cfg.carla_host, cfg.carla_port, maps=wanted, load_opt=load_opt, load_timeout=load_timeout,
+        for result in runtime.collect(cfg, maps=wanted, load_opt=load_opt, load_timeout=load_timeout,
                               on_loading=lambda i, n, name: log(f"Đang mở map {i}/{n}: {name} (map lớn có thể mất vài phút)")):
             if result.error:
                 failed += 1

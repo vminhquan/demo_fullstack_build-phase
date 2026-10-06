@@ -8,6 +8,7 @@ python3 -m venv .venv-build
 pip install --upgrade pip >/dev/null
 pip install -e '.[dev]'
 pyinstaller --onefile --clean --name scenario-forge-bridge \
-  --collect-submodules keyring.backends \
+  --collect-submodules keyring.backends --collect-submodules questionary \
+  --add-data "scenario_forge_bridge/carla_catalog.py:scenario_forge_bridge" \
   pyinstaller_entry.py
 echo "Built: $(pwd)/dist/scenario-forge-bridge"

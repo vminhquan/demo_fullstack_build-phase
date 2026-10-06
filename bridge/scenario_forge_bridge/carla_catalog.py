@@ -38,9 +38,7 @@ def import_carla():
         import carla  # type: ignore[import-not-found]
     except ImportError as exc:
         raise CarlaUnavailable(
-            "Chưa cài gói Python `carla`. Cài đúng phiên bản với CARLA server, ví dụ:\n"
-            "  pipx inject scenario-forge-bridge carla==0.9.16\n"
-            "(cài bằng pip thường thì: pip install carla==0.9.16)"
+            "Chưa có môi trường CARLA cho Bridge. Chạy `scenario-forge-bridge setup-runner` và chọn phiên bản CARLA của máy này."
         ) from exc
     return carla
 
@@ -277,3 +275,36 @@ def collect(
                 client.load_world(original)
             except Exception:  # noqa: BLE001 - best effort: the user can reopen their map
                 pass
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Runs in the Simulator Runner's Python (which has `carla`): one JSON object per line on stdout,
+    {"event": "loading" | "result" | "fatal", ...}. The Bridge itself never imports `carla`."""
+    import argparse
+    import json
+    from dataclasses import asdict
+
+    parser = argparse.ArgumentParser(description="Read CARLA maps into scenario-forge.catalog.v1 documents")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=2000)
+    parser.add_argument("--maps", default="")
+    parser.add_argument("--load-opt", action="store_true")
+    parser.add_argument("--load-timeout", type=float, default=LOAD_TIMEOUT_S)
+    args = parser.parse_args(argv)
+
+    def emit(event: dict[str, Any]) -> None:
+        print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+    maps = [item.strip() for item in args.maps.split(",") if item.strip()] or None
+    try:
+        for result in collect(args.host, args.port, maps=maps, load_opt=args.load_opt, load_timeout=args.load_timeout,
+                              on_loading=lambda index, total, name: emit({"event": "loading", "index": index, "total": total, "map_name": name})):
+            emit({"event": "result", **asdict(result)})
+    except CarlaUnavailable as exc:
+        emit({"event": "fatal", "error": str(exc)})
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
