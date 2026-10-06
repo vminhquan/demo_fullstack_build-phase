@@ -31,6 +31,8 @@ CRITERIA = ("CollisionTest",)
 # --timeout of scenario_runner.py: how long the CARLA client waits for the simulator (map loads are slow).
 CARLA_CLIENT_TIMEOUT_S = 60
 KILL_GRACE_S = 10
+# While a scenario runs, log its elapsed time and last output line this often (shows where it is stuck).
+PROGRESS_EVERY_S = 30
 LOG_TAIL_CHARS = 3000
 
 # Runs in the runner Python while a scenario plays: keeps the CARLA window camera on the ego ("hero"),
@@ -187,6 +189,14 @@ def _number(value) -> float:
         return 0.0
 
 
+def last_line(workdir: Path) -> str:
+    try:
+        lines = [line.strip() for line in log_tail(workdir).splitlines() if line.strip()]
+    except OSError:
+        return ""
+    return lines[-1][:200] if lines else "(chưa có output)"
+
+
 def log_tail(workdir: Path) -> str:
     path = workdir / "runner.log"
     if not path.is_file():
@@ -208,7 +218,7 @@ def _stop(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def run_case(cfg: BridgeConfig, case: dict, workdir: Path) -> Outcome:
+def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = None) -> Outcome:
     """Blocking: runs one test case (call it in a thread). Raises CaseFailed when there is no result."""
     if workdir.exists():
         shutil.rmtree(workdir, ignore_errors=True)
@@ -234,11 +244,18 @@ def run_case(cfg: BridgeConfig, case: dict, workdir: Path) -> Outcome:
         # Output goes to a file, never a pipe: a full or closed pipe hangs or breaks ScenarioRunner.
         with open(workdir / "runner.log", "wb") as runner_log:
             process = subprocess.Popen(command, cwd=cfg.runner_root, env=env, stdout=runner_log, stderr=subprocess.STDOUT)
-            try:
-                exit_code = process.wait(timeout=int(case.get("timeout_s") or 300))
-            except subprocess.TimeoutExpired:
-                _stop(process)
-                raise CaseFailed("TIMEOUT", f"Quá {case.get('timeout_s')} giây.\n{log_tail(workdir)}") from None
+            limit = int(case.get("timeout_s") or 300)
+            exit_code = None
+            while exit_code is None:
+                elapsed = time.monotonic() - started
+                if elapsed >= limit:
+                    _stop(process)
+                    raise CaseFailed("TIMEOUT", f"Quá {limit} giây.\n{log_tail(workdir)}")
+                try:
+                    exit_code = process.wait(timeout=min(PROGRESS_EVERY_S, limit - elapsed))
+                except subprocess.TimeoutExpired:
+                    if log:
+                        log(f"    … {case.get('case_key')} đang chạy {int(time.monotonic() - started)} s · {last_line(workdir)}")
     except OSError as exc:
         raise CaseFailed("SCENARIO_RUNNER_ERROR", f"Không chạy được {cfg.runner_python}: {exc}") from exc
     finally:
@@ -261,6 +278,27 @@ class RunExecutor:
         self.cfg, self.send, self.log = cfg, send, log
         self.queue: asyncio.Queue[dict] = asyncio.Queue()
         self.seen: set[int] = set()
+        # Reports not yet acknowledged by the backend, in send order: re-sent after every reconnect so a
+        # dropped socket never loses a result (the backend handles repeats idempotently).
+        self.unacked: dict[tuple, dict] = {}
+
+    @staticmethod
+    def _key(kind: str, message: dict) -> tuple:
+        return kind, message.get("run_id"), message.get("test_case_id")
+
+    async def report(self, message: dict) -> None:
+        self.unacked[self._key(message["type"], message)] = message
+        await self.send(message)
+
+    def acknowledged(self, frame: dict) -> None:
+        """ack (or a final error) from the backend for a report: stop re-sending it."""
+        self.unacked.pop(self._key(str(frame.get("ref")), frame), None)
+
+    async def resend_unacked(self) -> None:
+        if self.unacked:
+            self.log(f"Gửi lại {len(self.unacked)} kết quả chưa được máy chủ xác nhận.")
+        for message in list(self.unacked.values()):
+            await self.send(message)
 
     async def accept(self, message: dict) -> None:
         run_id = message["run_id"]
@@ -272,7 +310,7 @@ class RunExecutor:
         problems = runner_problems(self.cfg)
         if problems:
             self.log("Không chạy được phiên " + str(run_id) + ": " + "; ".join(problems))
-            await self.send({"type": "run.rejected", "run_id": run_id, "reason": "RUNNER_NOT_READY", "message": "\n".join(problems)[:4000]})
+            await self.report({"type": "run.rejected", "run_id": run_id, "reason": "RUNNER_NOT_READY", "message": "\n".join(problems)[:4000]})
             return
         await self.send({"type": "run.accepted", "run_id": run_id})
         count = len(message.get("test_cases") or [])
@@ -292,8 +330,8 @@ class RunExecutor:
         cases = message.get("test_cases") or []
         for index, case in enumerate(cases, 1):
             self.log(f"[{run_id}] {index}/{len(cases)} {case.get('case_key')} · {case.get('map_name')}")
-            await self.send(await self._run_one(run_id, case))
-        await self.send({"type": "run.completed", "run_id": run_id})
+            await self.report(await self._run_one(run_id, case))
+        await self.report({"type": "run.completed", "run_id": run_id})
         self.log(f"[{run_id}] Xong phiên chạy.")
 
     async def _run_one(self, run_id: int, case: dict) -> dict:
@@ -305,9 +343,9 @@ class RunExecutor:
             probe = await asyncio.to_thread(probe_carla, self.cfg.carla_host, self.cfg.carla_port)
             if not probe.reachable:
                 raise CaseFailed("CARLA_UNREACHABLE", f"Không kết nối được CARLA {probe.host}:{probe.port}: {probe.error}")
-            await self.send({"type": "job.started", **base})
+            await self.report({"type": "job.started", **base})
             workdir = config_store.config_dir() / "runs" / str(run_id) / str(case.get("case_key") or case["test_case_id"])
-            outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir)
+            outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log)
         except CaseFailed as exc:
             self.log(f"  ✗ {case.get('case_key')}: {exc.code}")
             return {"type": "job.failed", **base, "error_code": exc.code, "error_message": (exc.message or None) and exc.message[-4000:]}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import time
 from collections.abc import Callable
 
 from websockets.asyncio.client import ClientConnection, connect
@@ -101,6 +102,15 @@ async def _sync_catalog(ws: ClientConnection, cfg: BridgeConfig, token: str, mes
     await send("catalog.sync.done", synced=synced, failed=failed)
 
 
+def _close_detail(exc: ConnectionClosed, opened_at: float | None) -> str:
+    """Who closed and how: 1006 = dropped without a close frame (network / proxy), 1011 = keepalive ping timeout."""
+    frame = exc.rcvd or exc.sent
+    side = "máy chủ" if exc.rcvd else "Bridge" if exc.sent else "mạng"
+    code = f"mã {frame.code}{' ' + frame.reason if frame.reason else ''}" if frame else "mã 1006, không có frame đóng"
+    lasted = f", sau {time.monotonic() - opened_at:.0f} giây" if opened_at else ""
+    return f"{side} đóng, {code}{lasted}"
+
+
 def _apply_connections(cfg: BridgeConfig, items: list[dict]) -> None:
     cfg.connections = [Connection(**{key: item[key] for key in Connection.__dataclass_fields__}) for item in items]
     config_store.save(cfg)
@@ -118,6 +128,7 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
         max_size=None,
     ) as ws:
         state["ws"] = ws
+        state["opened_at"] = time.monotonic()
         heartbeat = asyncio.create_task(_heartbeats(ws, cfg, log))
         sync_task: asyncio.Task | None = None
         try:
@@ -132,6 +143,7 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
                     if stop_when_unlinked and not cfg.connections:
                         log("Bridge chưa được ghép với project nào. Dùng `pair <mã 6 số>` để ghép.")
                         return True
+                    await executor.resend_unacked()
                 elif kind == "connection.added":
                     item = message["connection"]
                     cfg.upsert_connection(Connection(**{key: item[key] for key in Connection.__dataclass_fields__}))
@@ -154,7 +166,11 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
                         sync_task = asyncio.create_task(_sync_catalog(ws, cfg, token, message, log))
                 elif kind == "run.assign":
                     await executor.accept(message)
+                elif kind == "ack":
+                    executor.acknowledged(message)
                 elif kind == "error":
+                    if message.get("code") in ("RUN_NOT_FOUND", "TEST_CASE_NOT_IN_RUN", "INVALID_MESSAGE"):
+                        executor.acknowledged(message)  # the backend will never take it: stop re-sending
                     ref = f" ({message['ref']})" if message.get("ref") else ""
                     log(f"Máy chủ báo lỗi{ref}: {message.get('code')} {message.get('message') or ''}".rstrip())
         finally:
@@ -193,10 +209,12 @@ async def _reconnect_loop(cfg: BridgeConfig, token: str, log: Log, stop_when_unl
     backoff = 1.0
     while True:
         state["connected"] = False
+        state["opened_at"] = None
         try:
             if await _session(cfg, token, log, stop_when_unlinked, state, executor):
                 return
-            log("Máy chủ đóng kết nối.")
+            opened_at = state.get("opened_at")
+            log("Máy chủ đóng kết nối" + (f" sau {time.monotonic() - opened_at:.0f} giây." if opened_at else "."))
         except InvalidStatus as exc:
             if exc.response.status_code in (401, 403):
                 raise ChannelRejected("Máy chủ từ chối device token (Bridge đã bị gỡ hoặc token sai). Hãy chạy lại `pair <mã>`.") from exc
@@ -206,7 +224,7 @@ async def _reconnect_loop(cfg: BridgeConfig, token: str, log: Log, stop_when_unl
                 raise ChannelRejected(f"Máy chủ từ chối kết nối: {exc.rcvd.reason or 'policy violation'}") from exc
             if exc.rcvd is not None and exc.rcvd.code == 4000:
                 raise ChannelRejected("Một tiến trình Bridge khác vừa kết nối bằng cùng token; tiến trình này dừng.") from exc
-            log("Mất kết nối tới máy chủ.")
+            log(f"Mất kết nối tới máy chủ ({_close_detail(exc, state.get('opened_at'))}).")
         except InvalidURI as exc:
             raise ChannelRejected(f"Địa chỉ máy chủ không hợp lệ: {cfg.ws_url}") from exc
         except (OSError, asyncio.TimeoutError) as exc:

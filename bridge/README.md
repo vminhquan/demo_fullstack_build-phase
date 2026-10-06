@@ -149,7 +149,7 @@ pytest && ruff check .
 
 ## Giới hạn hiện tại
 
-- Kết quả test case gửi lúc đang mất kết nối chưa được lưu để gửi lại: backend sẽ đánh `TIMEOUT` / `MISSING_RESULT` cho test case đó.
+- Kết quả chưa được máy chủ xác nhận (`ack`) được gửi lại sau mỗi lần kết nối lại, nhưng chỉ giữ trong bộ nhớ: tắt hẳn Bridge thì mất.
 - Không bấm "Đồng bộ dữ liệu CARLA" khi đang chạy test: cả hai cùng đổi map.
 - Test case bị dừng vì quá thời gian có thể để lại xe trên map: mở lại CARLA trước lần chạy sau.
 

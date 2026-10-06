@@ -143,3 +143,23 @@ def test_carla_down_fails_the_case(cfg, monkeypatch) -> None:
     sent = run_executor(cfg, {"type": "run.assign", "run_id": 9, "test_cases": [case()]})
     assert [m["type"] for m in sent] == ["run.accepted", "job.failed", "run.completed"]
     assert sent[1]["error_code"] == "CARLA_UNREACHABLE"
+
+
+def test_reports_are_kept_until_acknowledged() -> None:
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    async def main() -> None:
+        executor = runner.RunExecutor(BridgeConfig(), send, lambda _: None)
+        await executor.report({"type": "job.completed", "run_id": 7, "test_case_id": 1, "verdict": "PASS"})
+        await executor.report({"type": "run.completed", "run_id": 7})
+        executor.acknowledged({"type": "ack", "ref": "job.completed", "run_id": 7, "test_case_id": 1})
+        sent.clear()
+        await executor.resend_unacked()
+        assert [m["type"] for m in sent] == ["run.completed"]
+        executor.acknowledged({"type": "error", "ref": "run.completed", "code": "RUN_NOT_FOUND", "run_id": 7})
+        assert executor.unacked == {}
+
+    asyncio.run(main())
