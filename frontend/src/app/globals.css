@@ -958,7 +958,7 @@ a.case-key { display: inline-block; color: var(--blue); }
 .table .col-check input { margin: 0; vertical-align: middle; cursor: pointer; }
 /* Start up: choose the CARLA data source */
 .startup-choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
-.startup-choice { display: grid; gap: 14px; margin: 0; padding: 20px; }
+.startup-choice { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-width: 0; margin: 0; padding: 20px; }
 .startup-choice.selected { border-color: var(--green); box-shadow: 0 0 0 1px var(--green) inset; }
 .startup-choice > p { margin: 0; line-height: 1.6; }
 .startup-choice-head { display: flex; align-items: flex-start; gap: 12px; }
@@ -968,10 +968,11 @@ a.case-key { display: inline-block; color: var(--blue); }
 .startup-maps { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .startup-map { display: grid; gap: 2px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
 @media (max-width: 900px) { .startup-choices, .startup-maps { grid-template-columns: 1fr; } }
-.bridge-list { display: grid; gap: 8px; }
+.bridge-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .bridge-item { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); }
 .bridge-item strong { margin-right: 8px; }
-.bridge-item-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.bridge-item > div:first-child { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.bridge-item-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .bridge-pair { display: grid; gap: 8px; }
 .bridge-otp { padding: 14px; border: 1px dashed var(--border); border-radius: var(--radius); }
 .otp-digits { display: flex; gap: 8px; }
@@ -981,14 +982,15 @@ a.case-key { display: inline-block; color: var(--blue); }
 }
 .otp-digits.expired .otp-digit { color: var(--fg-secondary); text-decoration: line-through; opacity: .6; }
 .otp-expiry { color: var(--fg-secondary); font-size: 13px; }
-.bridge-guide { border: 1px solid var(--border); border-radius: var(--radius); }
+.bridge-guide { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); }
 .bridge-guide > summary { display: flex; align-items: center; gap: 8px; padding: 10px 12px; font-size: 14px; font-weight: 500; cursor: pointer; }
 .bridge-guide[open] > summary { border-bottom: 1px solid var(--border); }
-.bridge-guide-body { display: grid; gap: 14px; padding: 12px; }
+/* Grid tracks default to `auto` (as wide as the longest nowrap command): pin them to the card so long commands scroll inside. */
+.bridge-guide-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 12px; }
 .bridge-guide-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
 .bridge-guide-steps { display: grid; gap: 12px; margin: 0; padding-left: 20px; }
-.bridge-guide-steps li { display: grid; gap: 6px; }
-.bridge-guide-daily { display: grid; gap: 8px; }
+.bridge-guide-steps li { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; min-width: 0; }
+.bridge-guide-daily { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .command-line { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 6px 6px 10px; border-radius: var(--radius); background: var(--bg-hover); }
 .command-line code { flex: 1; min-width: 0; overflow-x: auto; font-family: var(--font-mono); font-size: 12px; white-space: nowrap; }
 .command-copy { flex: 0 0 auto; height: 26px; padding: 0 10px; font-size: 12px; }
