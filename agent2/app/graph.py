@@ -22,7 +22,7 @@ from app.contracts import (
 )
 from app.cut_in.model import CutInPlan, PromptConstraints, ValidationResult
 from app.cut_in.sample import SampledVariant, SamplingError, sample_variants
-from app.cut_in.validate import validate_cut_in
+from app.cut_in.validate import repair_maneuver, validate_cut_in
 from app.cut_in.xosc import XoscExportError, render_xosc
 from app.llm.client import LLMCallError
 from app.llm.tools import CatalogApi, ExtractionTools, ProposalTools, Toolbox
@@ -166,10 +166,25 @@ def after_validate(state: GraphState) -> str:
     validation: ValidationResult = state["validation"]
     if validation.valid:
         return "export_xosc"
-    if (state["proposal_attempts"] < state["max_proposal_attempts"]
-            and validation.issues and all(issue.recoverable for issue in validation.issues)):
+    recoverable = bool(validation.issues) and all(issue.recoverable for issue in validation.issues)
+    if recoverable and state["proposal_attempts"] < state["max_proposal_attempts"]:
         return "propose_maneuver"
-    return "reject_variant"
+    return "repair_plan" if recoverable else "reject_variant"
+
+
+def repair_plan(state: GraphState, runtime: Runtime[GraphContext]) -> dict:
+    """The LLM kept missing the motion checks: compute the nearest numbers that pass them."""
+    variant = _variant(state)
+    repaired = repair_maneuver(state["current_plan"], variant)
+    if repaired is None:
+        return {"validation": None}
+    validation = validate_cut_in(repaired, variant, _snapshot(runtime, variant))
+    return {"current_plan": repaired, "validation": validation,
+            "feedback": [f"{issue.code}: {issue.message}" for issue in validation.issues]}
+
+
+def after_repair(state: GraphState) -> str:
+    return "export_xosc" if state["validation"] is not None and state["validation"].valid else "reject_variant"
 
 
 def export_xosc(state: GraphState, runtime: Runtime[GraphContext]) -> dict:
@@ -225,6 +240,7 @@ def build_graph():
         ("select_variant", select_variant),
         ("propose_maneuver", propose_maneuver),
         ("validate_plan", validate_plan),
+        ("repair_plan", repair_plan),
         ("export_xosc", export_xosc),
         ("reject_variant", reject_variant),
         ("advance_variant", advance_variant),
@@ -238,7 +254,8 @@ def build_graph():
     builder.add_edge("select_variant", "propose_maneuver")
     builder.add_conditional_edges("propose_maneuver", after_propose, ["validate_plan", "reject_variant"])
     builder.add_conditional_edges("validate_plan", after_validate,
-                                  ["propose_maneuver", "export_xosc", "reject_variant"])
+                                  ["propose_maneuver", "export_xosc", "repair_plan", "reject_variant"])
+    builder.add_conditional_edges("repair_plan", after_repair, ["export_xosc", "reject_variant"])
     builder.add_edge("export_xosc", "advance_variant")
     builder.add_edge("reject_variant", "advance_variant")
     builder.add_conditional_edges("advance_variant", after_advance, ["select_variant", "finish"])
@@ -252,7 +269,7 @@ GENERATION_GRAPH = build_graph()
 def run_graph(request: GenerationRequest, llm: GeneratorLLM, seed: int, catalog_api: CatalogApi | None = None) -> GraphState:
     # The bound is proportional to variants and possible repair turns; the
     # LangGraph default of 25 steps is too small for multi-map sessions.
-    step_limit = max(50, request.target_count * (2 * request.max_proposal_attempts + 6) + 10)
+    step_limit = max(50, request.target_count * (2 * request.max_proposal_attempts + 7) + 10)
     return cast(GraphState, GENERATION_GRAPH.invoke(
         initial_state(request, seed),
         context={"request": request, "selected_snapshots": request.selected_snapshots, "llm": llm,

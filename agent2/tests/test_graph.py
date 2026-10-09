@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from app.contracts import GenerationRequest
 from app.cut_in.model import CutInPlan, PromptConstraints
-from app.graph import GENERATION_GRAPH, initial_state, run_graph
+from app.graph import run_graph
 from app.llm.client import LLMCallError
 from app.service import generate
 from test_sample import snapshot
@@ -55,9 +55,10 @@ def test_graph_stops_after_configured_attempt_limit() -> None:
 
     llm = InvalidLLM()
     result = generate(request(max_proposal_attempts=2), llm)
-    assert result.status == "failed"
-    assert llm.calls == 2
-    assert result.map_failures[0].code == "NO_VALID_PLAN"
+    # Two LLM tries, then the numbers are repaired by computation instead of losing the variant.
+    assert llm.calls == 2 and result.status == "completed"
+    plan = result.scenarios[0].plan
+    assert plan.motorcycle_start_offset_m > 0 and plan.desired_lead_gap_m == 5 and plan.trigger_time_s == 0.5
 
 
 def test_graph_does_not_retry_site_error_with_llm() -> None:

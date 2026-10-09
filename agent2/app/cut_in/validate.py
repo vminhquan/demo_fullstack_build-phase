@@ -115,3 +115,28 @@ def validate_cut_in(plan: CutInPlan, variant: SampledVariant, snapshot: Selected
             "desired_lead_gap_m", recoverable=True,
         ))
     return ValidationResult(valid=not issues, issues=issues)
+
+
+def repair_maneuver(plan: CutInPlan, variant: SampledVariant) -> CutInPlan | None:
+    """Closest numbers to `plan` that satisfy the motion checks above, or None when the corridor cannot fit
+    any cut-in at the locked speeds. Used after the LLM ran out of attempts: the checks are plain kinematics."""
+    site = variant.site
+    usable_end = site.available_length_m - END_BUFFER_M
+    lateral = math.hypot(site.ego_anchor.x - site.motorcycle_anchor.x, site.ego_anchor.y - site.motorcycle_anchor.y)
+    ego, motorcycle = plan.ego_speed_kmh / 3.6, plan.motorcycle_speed_kmh / 3.6
+    duration = max(plan.lane_change_duration_s, round(lateral / MAX_LATERAL_SPEED_MPS + 0.2, 1))
+    margin = 0.5
+    for trigger in dict.fromkeys((max(plan.trigger_time_s, 0.0), 0.0)):
+        completion = trigger + duration
+        if ego * completion > usable_end - margin:
+            continue
+        highest = usable_end - motorcycle * completion - margin  # motorcycle still inside the corridor
+        for gap in dict.fromkeys((plan.desired_lead_gap_m, 2.0)):
+            lowest = max(0.0, gap + VEHICLE_LENGTH_ALLOWANCE_M + margin - (motorcycle - ego) * completion)
+            if lowest <= highest:
+                offset = min(max(plan.motorcycle_start_offset_m, lowest), highest)
+                return plan.model_copy(update={
+                    "motorcycle_start_offset_m": round(offset, 1), "trigger_time_s": trigger,
+                    "lane_change_duration_s": duration, "desired_lead_gap_m": gap,
+                })
+    return None

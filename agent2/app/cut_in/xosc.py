@@ -36,6 +36,21 @@ def _trigger(parent: ET.Element, name: str, seconds: float) -> None:
     })
 
 
+# ScenarioRunner turns storyboard stop conditions named criteria_* into its test criteria; without any it prints
+# "Nothing to analyze" and writes no --json report. Kept in their own ConditionGroup (groups are OR-ed), so they
+# never hold back the time-based end of the scenario.
+CRITERIA = ("CollisionTest", "KeepLaneTest", "RunningRedLightTest", "RunningStopTest", "OnSidewalkTest", "WrongLaneTest")
+
+
+def _criteria(stop_trigger: ET.Element) -> None:
+    group = ET.SubElement(stop_trigger, "ConditionGroup")
+    for name in CRITERIA:
+        condition = ET.SubElement(group, "Condition", {"name": f"criteria_{name}", "delay": "0", "conditionEdge": "rising"})
+        ET.SubElement(ET.SubElement(condition, "ByValueCondition"), "ParameterCondition", {
+            "parameterRef": "", "value": "", "rule": "lessThan",
+        })
+
+
 def _vehicle(parent: ET.Element, entity: str, blueprint: str, *, motorcycle: bool) -> None:
     object_node = ET.SubElement(parent, "ScenarioObject", {"name": entity})
     vehicle = ET.SubElement(object_node, "Vehicle", {
@@ -157,7 +172,9 @@ def render_xosc(plan: CutInPlan, variant: SampledVariant, snapshot: SelectedSnap
     _trigger(ET.SubElement(act, "StartTrigger"), "StartAct", 0)
     end_time = plan.trigger_time_s + plan.lane_change_duration_s + 0.1
     _trigger(ET.SubElement(act, "StopTrigger"), "EndAct", end_time)
-    _trigger(ET.SubElement(storyboard, "StopTrigger"), "EndScenario", end_time)
+    stop = ET.SubElement(storyboard, "StopTrigger")
+    _trigger(stop, "EndScenario", end_time)
+    _criteria(stop)
     ET.indent(root)
     xml = '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
     return xml, hashlib.sha256(xml.encode("utf-8")).hexdigest()

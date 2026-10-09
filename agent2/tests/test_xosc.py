@@ -65,3 +65,11 @@ def test_xosc_validates_against_open_scenario_1_0_schema(tmp_path: Path) -> None
     result = subprocess.run(["xmllint", "--noout", "--schema", str(SCHEMA), str(path)],
                             capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_scenario_runner_gets_criteria_apart_from_the_end_condition() -> None:
+    root = ET.fromstring(render_xosc(plan(), variant(), snapshot("Town01", 1))[0])
+    end, criteria = root.findall("Storyboard/StopTrigger/ConditionGroup")
+    assert [item.get("name") for item in end.findall("Condition")] == ["EndScenario"]
+    names = [item.get("name") for item in criteria.findall("Condition")]
+    assert "criteria_CollisionTest" in names and all(name.startswith("criteria_") for name in names)
