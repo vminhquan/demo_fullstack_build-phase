@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -48,27 +48,52 @@ class Variant:
     danger_level: str | None
 
 
+def variant_on(options: BuilderMapOptions, no: int, slot: int) -> Variant:
+    """Variant `no` run on the map `options`; `slot` picks the slot-th ticked value of each category."""
+
+    def pick(values: list[Any]) -> Any:
+        return values[slot % len(values)] if values else None
+
+    danger = pick(options.danger_levels)
+    return Variant(
+        no=no,
+        map_code=options.map_code,
+        catalog_snapshot_id=options.catalog_snapshot_id,
+        ego_vehicle_code=pick(options.ego_vehicle_codes),
+        adversary_type=pick(options.adversary_types),
+        environment_code=pick(options.environment_codes),
+        danger_level=getattr(danger, "value", danger),
+    )
+
+
 def plan_variants(maps: list[BuilderMapOptions], target: int = TARGET_COUNT) -> list[Variant]:
     """Variant i goes to map i mod len(maps); the k-th variant of a map takes the k-th ticked value of each category."""
-    variants = []
-    for index in range(target):
-        options = maps[index % len(maps)]
-        slot = index // len(maps)
+    return [variant_on(maps[index % len(maps)], index + 1, index // len(maps)) for index in range(target)]
 
-        def pick(values: list[Any]) -> Any:
-            return values[slot % len(values)] if values else None
 
-        danger = pick(options.danger_levels)
-        variants.append(Variant(
-            no=index + 1,
-            map_code=options.map_code,
-            catalog_snapshot_id=options.catalog_snapshot_id,
-            ego_vehicle_code=pick(options.ego_vehicle_codes),
-            adversary_type=pick(options.adversary_types),
-            environment_code=pick(options.environment_codes),
-            danger_level=getattr(danger, "value", danger),
-        ))
-    return variants
+# Agent failures that say the map itself cannot host the scenario (no cut-in site, or none at the asked
+# location such as a four-way junction): the variant moves to another picked map instead of failing.
+MAP_UNFIT_CODES = {"NO_VERIFIED_SITES", "LOCATION_NOT_AVAILABLE", "SITE_INDEX_MISSING", "INSUFFICIENT_SITE_LENGTH"}
+
+
+@dataclass
+class MapRouting:
+    """Which picked maps turned out unable to host the description, shared by the variants of one session."""
+
+    maps: list[BuilderMapOptions]
+    unfit: dict[str, str] = field(default_factory=dict)  # map_code -> the Agent's reason
+
+    def next_fit(self, variant: Variant) -> Variant | None:
+        """`variant` itself if its map may still fit, else the same variant on the next picked map that may."""
+        start = next(index for index, item in enumerate(self.maps) if item.map_code == variant.map_code)
+        for step in range(len(self.maps)):
+            options = self.maps[(start + step) % len(self.maps)]
+            if options.map_code not in self.unfit:
+                return variant if step == 0 else variant_on(options, variant.no, (variant.no - 1) // len(self.maps))
+        return None
+
+    def unfit_summary(self) -> str:
+        return "; ".join(f"{code}: {reason}" for code, reason in self.unfit.items())
 
 
 def fallback_title(description: str) -> str:
@@ -148,10 +173,11 @@ async def run_session(builder_id: int, actor: Principal, agent: AgentPort) -> No
             await session.refresh(builder)
 
         limit = asyncio.Semaphore(MAX_PARALLEL)
+        routing = MapRouting(maps)
 
         async def guarded(variant: Variant) -> None:
             async with limit:
-                await run_variant(builder_id, builder, actor, agent, variant)
+                await run_routed(builder_id, builder, actor, agent, variant, routing)
 
         await asyncio.gather(*(guarded(variant) for variant in variants))
     except Exception:  # noqa: BLE001 - the session must never stay GENERATING forever
@@ -160,7 +186,29 @@ async def run_session(builder_id: int, actor: Principal, agent: AgentPort) -> No
         await finish_session(builder_id)
 
 
-async def run_variant(builder_id: int, builder: BuilderSession, actor: Principal, agent: AgentPort, variant: Variant) -> None:
+async def run_routed(
+    builder_id: int, builder: BuilderSession, actor: Principal, agent: AgentPort, variant: Variant, routing: MapRouting,
+) -> None:
+    """Run the variant on its map, moving it to the next picked map while the Agent says a map cannot host it."""
+    while (target := routing.next_fit(variant)) is not None:
+        error = await run_variant(builder_id, builder, actor, agent, target, record_failure=False)
+        if error is None:
+            return
+        if error["code"] not in MAP_UNFIT_CODES:
+            await record_error(builder_id, error)
+            return
+        routing.unfit.setdefault(target.map_code, error["message"])
+    await record_error(builder_id, {
+        "variant_no": variant.no, "map_code": variant.map_code, "code": "NO_FITTING_MAP",
+        "message": f"Không map nào đã chọn dựng được kịch bản này. {routing.unfit_summary()}"[:2000],
+    })
+
+
+async def run_variant(
+    builder_id: int, builder: BuilderSession, actor: Principal, agent: AgentPort, variant: Variant,
+    *, record_failure: bool = True,
+) -> dict[str, Any] | None:
+    """Generate and save one variant. Returns None on success, else the error (recorded unless told not to)."""
     async with SessionFactory() as session:
         try:
             generation = await create_generation(
@@ -205,13 +253,17 @@ async def run_variant(builder_id: int, builder: BuilderSession, actor: Principal
                 .values(succeeded_count=BuilderSession.succeeded_count + 1)
             )
             await session.commit()
+            return None
         except Exception as exc:  # noqa: BLE001 - one failed variant must not stop the others
             await session.rollback()
             code = getattr(exc, "code", None) or "GENERATION_FAILED"
             message = exc.message if isinstance(exc, DomainError) else f"{type(exc).__name__}"
             if not isinstance(exc, DomainError):
                 log.exception("Builder session %s variant %s failed", builder_id, variant.no)
-            await record_error(builder_id, {"variant_no": variant.no, "map_code": variant.map_code, "code": str(code), "message": message})
+            error = {"variant_no": variant.no, "map_code": variant.map_code, "code": str(code), "message": message}
+            if record_failure:
+                await record_error(builder_id, error)
+            return error
 
 
 async def record_error(builder_id: int, error: dict[str, Any]) -> None:

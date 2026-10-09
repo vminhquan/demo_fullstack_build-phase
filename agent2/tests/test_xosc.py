@@ -73,3 +73,10 @@ def test_scenario_runner_gets_criteria_apart_from_the_end_condition() -> None:
     assert [item.get("name") for item in end.findall("Condition")] == ["EndScenario"]
     names = [item.get("name") for item in criteria.findall("Condition")]
     assert "criteria_CollisionTest" in names and all(name.startswith("criteria_") for name in names)
+
+
+def test_scenario_runner_recognises_the_ego() -> None:
+    root = ET.fromstring(render_xosc(plan(), variant(), snapshot("Town01", 1))[0])
+    types = {item.get("name"): item.find("Vehicle/Properties/Property[@name='type']").get("value")
+             for item in root.findall("Entities/ScenarioObject")}
+    assert types == {"Ego": "ego_vehicle", "Motorcycle": "simulation"}

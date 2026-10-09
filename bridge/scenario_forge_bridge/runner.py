@@ -148,8 +148,12 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     - ScenarioRunner reads RelativeTargetLane as lane changes from the actor's own lane (> 0 = left) and ignores
       entityRef (openscenario_parser.py:1383); "0" divides by zero. A "0" becomes ±1 toward the referenced entity.
     - criteria_<Name> conditions go into the Storyboard StopTrigger: without any, every run "passes".
+    - ScenarioRunner builds those criteria for its ego vehicles only, and an ego is a Vehicle whose Property
+      `type` is `ego_vehicle` (openscenario_configuration.py). With none, it prints "Nothing to analyze" and
+      writes no report: the vehicle playing the hero (role_name hero, or named Ego) is marked as the ego.
     """
     root = ET.fromstring(xosc)
+    _ensure_ego(root)
     storyboard = root.find("Storyboard")
     if storyboard is None:
         raise CaseFailed("INVALID_XOSC", "XOSC không có Storyboard")
@@ -185,6 +189,31 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
             ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "ParameterCondition", {"parameterRef": "", "value": "", "rule": "lessThan"})
     ET.indent(root)
     return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
+
+
+def _ensure_ego(root: ET.Element) -> None:
+    objects = root.findall("Entities/ScenarioObject")
+    if any(prop.get("name") == "type" and prop.get("value") == "ego_vehicle"
+           for item in objects for prop in item.iter("Property")):
+        return
+
+    def is_hero(item: ET.Element) -> bool:
+        return any(prop.get("name") == "role_name" and prop.get("value") == "hero" for prop in item.iter("Property"))
+
+    hero = next((item for item in objects if item.find("Vehicle") is not None and is_hero(item)), None)
+    hero = hero or next((item for item in objects if item.find("Vehicle") is not None
+                         and (item.get("name") or "").lower() in ("ego", "hero", "ego_vehicle")), None)
+    if hero is None:
+        return
+    vehicle = hero.find("Vehicle")
+    properties = vehicle.find("Properties")
+    if properties is None:
+        properties = ET.SubElement(vehicle, "Properties")
+    kind = next((prop for prop in properties.findall("Property") if prop.get("name") == "type"), None)
+    if kind is None:
+        ET.SubElement(properties, "Property", {"name": "type", "value": "ego_vehicle"})
+    else:
+        kind.set("value", "ego_vehicle")
 
 
 def _start_poses(storyboard: ET.Element) -> dict[str, tuple[float, float, float]]:

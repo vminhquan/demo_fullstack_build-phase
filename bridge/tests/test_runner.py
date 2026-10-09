@@ -220,3 +220,18 @@ def test_runner_error_that_does_not_exit_is_reported_quickly(cfg, tmp_path, monk
         runner.run_case(cfg, case(timeout_s=60), tmp_path / "work")
     assert exc.value.code == "SCENARIO_RUNNER_ERROR" and "ZeroDivisionError" in exc.value.message
     assert time.monotonic() - started < 15
+
+
+def test_prepare_xosc_marks_the_hero_as_scenario_runner_ego() -> None:
+    xosc = """<OpenSCENARIO><Entities>
+      <ScenarioObject name="Ego"><Vehicle name="vehicle.audi.a2" vehicleCategory="car"><Properties>
+        <Property name="type" value="car"/><Property name="role_name" value="hero"/></Properties></Vehicle></ScenarioObject>
+      <ScenarioObject name="Motorcycle"><Vehicle name="vehicle.yamaha.yzf" vehicleCategory="motorbike"><Properties>
+        <Property name="type" value="motorcycle"/></Properties></Vehicle></ScenarioObject>
+    </Entities><Storyboard><Init><Actions/></Init></Storyboard></OpenSCENARIO>"""
+    root = ET.fromstring(runner.prepare_xosc(xosc))
+    types = {item.get("name"): item.find("Vehicle/Properties/Property[@name='type']").get("value")
+             for item in root.findall("Entities/ScenarioObject")}
+    assert types == {"Ego": "ego_vehicle", "Motorcycle": "motorcycle"}
+    # A file that already names its ego is left alone.
+    assert runner.prepare_xosc(runner.prepare_xosc(xosc)).count('value="ego_vehicle"') == 1

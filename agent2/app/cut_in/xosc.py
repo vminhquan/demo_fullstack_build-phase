@@ -71,7 +71,9 @@ def _vehicle(parent: ET.Element, entity: str, blueprint: str, *, motorcycle: boo
             "positionX": x, "positionZ": "0.3",
         })
     properties = ET.SubElement(vehicle, "Properties")
-    ET.SubElement(properties, "Property", {"name": "type", "value": "motorcycle" if motorcycle else "car"})
+    # ScenarioRunner takes only `type = ego_vehicle` as the ego, and builds every criteria_* test for the egos:
+    # with "car" here it found no ego, so no criteria and no --json report.
+    ET.SubElement(properties, "Property", {"name": "type", "value": "simulation" if motorcycle else "ego_vehicle"})
     ET.SubElement(properties, "Property", {"name": "role_name", "value": "scenario" if motorcycle else "hero"})
 
 

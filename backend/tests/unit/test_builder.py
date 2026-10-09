@@ -47,3 +47,61 @@ def test_session_requires_an_ego_for_every_picked_map() -> None:
 def test_variants_keep_the_snapshot_the_screen_listed() -> None:
     maps = [BuilderMapOptions(map_code="Town03", catalog_snapshot_id=7, ego_vehicle_codes=["vehicle.tesla.model3"])]
     assert {variant.catalog_snapshot_id for variant in plan_variants(maps)} == {7}
+
+
+async def test_variants_leave_maps_that_cannot_host_the_description(monkeypatch) -> None:
+    from app.modules.builder import service
+
+    maps = [BuilderMapOptions(map_code=code, ego_vehicle_codes=["vehicle.audi.a2"]) for code in ("Town01", "Town03", "Town04")]
+    unfit = {"Town01": "NO_VERIFIED_SITES", "Town04": "LOCATION_NOT_AVAILABLE"}
+    tried, recorded = [], []
+
+    async def fake_run(builder_id, builder, actor, agent, variant, *, record_failure=True):
+        tried.append((variant.no, variant.map_code))
+        if variant.map_code in unfit:
+            return {"variant_no": variant.no, "map_code": variant.map_code, "code": unfit[variant.map_code], "message": "no 4-way"}
+        return None
+
+    async def fake_record(builder_id, error):
+        recorded.append(error)
+
+    monkeypatch.setattr(service, "run_variant", fake_run)
+    monkeypatch.setattr(service, "record_error", fake_record)
+    routing = service.MapRouting(maps)
+    for variant in plan_variants(maps):
+        await service.run_routed(1, None, None, None, variant, routing)
+    assert recorded == []  # every variant ended on Town03
+    assert sorted(routing.unfit) == ["Town01", "Town04"]
+    landed = {}
+    for no, code in tried:
+        landed[no] = code
+    assert set(landed.values()) == {"Town03"} and len(landed) == TARGET_COUNT
+    # Once a map is known not to fit, later variants skip it without calling the Agent.
+    assert sum(code == "Town04" for _, code in tried) == 1 and sum(code == "Town01" for _, code in tried) == 1
+
+
+async def test_no_fitting_map_is_one_clear_error_and_other_failures_are_kept(monkeypatch) -> None:
+    from app.modules.builder import service
+
+    maps = [BuilderMapOptions(map_code="Town01"), BuilderMapOptions(map_code="Town02")]
+    recorded = []
+
+    async def unfit_everywhere(builder_id, builder, actor, agent, variant, *, record_failure=True):
+        return {"variant_no": variant.no, "map_code": variant.map_code, "code": "NO_VERIFIED_SITES", "message": "no site"}
+
+    async def fake_record(builder_id, error):
+        recorded.append(error)
+
+    monkeypatch.setattr(service, "run_variant", unfit_everywhere)
+    monkeypatch.setattr(service, "record_error", fake_record)
+    await service.run_routed(1, None, None, None, plan_variants(maps)[0], service.MapRouting(maps))
+    assert [item["code"] for item in recorded] == ["NO_FITTING_MAP"] and "Town02: no site" in recorded[0]["message"]
+
+    recorded.clear()
+
+    async def agent_down(builder_id, builder, actor, agent, variant, *, record_failure=True):
+        return {"variant_no": variant.no, "map_code": variant.map_code, "code": "AGENT_UNAVAILABLE", "message": "down"}
+
+    monkeypatch.setattr(service, "run_variant", agent_down)
+    await service.run_routed(1, None, None, None, plan_variants(maps)[0], service.MapRouting(maps))
+    assert [item["code"] for item in recorded] == ["AGENT_UNAVAILABLE"]
