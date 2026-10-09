@@ -41,7 +41,7 @@ EXIT_GRACE_S = 15
 POLL_S = 5
 LOG_TAIL_CHARS = 3000
 
-# Runs in the runner Python while a scenario plays: keeps the CARLA window camera on the ego ("hero"),
+# Runs in the runner Python while a scenario plays: keeps the CARLA window camera on the ego ("hero" / "Ego"),
 # and pulls back to frame both vehicles when another actor comes within 30 m. Exits when the ego is gone.
 CAMERA_CODE = r"""
 import math, sys, time
@@ -54,7 +54,8 @@ while time.time() < deadline:
         actors = list(world.get_actors().filter("vehicle.*")) + list(world.get_actors().filter("walker.*"))
     except RuntimeError:
         time.sleep(0.5); continue
-    hero = next((a for a in actors if a.attributes.get("role_name") == "hero"), None)
+    # ScenarioRunner names actors after their ScenarioObject: "hero", or "Ego" in older Scenario Forge files.
+    hero = next((a for a in actors if a.attributes.get("role_name", "").lower() in ("hero", "ego", "ego_vehicle")), None)
     if hero is None:
         if seen:
             break

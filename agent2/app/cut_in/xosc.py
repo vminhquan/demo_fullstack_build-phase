@@ -36,6 +36,14 @@ def _trigger(parent: ET.Element, name: str, seconds: float) -> None:
     })
 
 
+# ScenarioRunner names each CARLA actor after its ScenarioObject (role_name = name): "hero" is what CARLA
+# tools, and the Bridge's follow camera, look for as the ego.
+EGO = "hero"
+MOTORCYCLE = "Motorcycle"
+# Seconds the scenario keeps running after the lane change ends, so the outcome (collision, braking) is seen
+# and judged instead of stopping as the motorcycle reaches the ego lane.
+OBSERVE_AFTER_S = 4.0
+
 # ScenarioRunner turns storyboard stop conditions named criteria_* into its test criteria; without any it prints
 # "Nothing to analyze" and writes no --json report. Kept in their own ConditionGroup (groups are OR-ed), so they
 # never hold back the time-based end of the scenario.
@@ -144,20 +152,20 @@ def render_xosc(plan: CutInPlan, variant: SampledVariant, snapshot: SelectedSnap
     ET.SubElement(root, "CatalogLocations")
     ET.SubElement(ET.SubElement(root, "RoadNetwork"), "LogicFile", {"filepath": snapshot.ref.map_name})
     entities = ET.SubElement(root, "Entities")
-    _vehicle(entities, "Ego", plan.ego_blueprint_id, motorcycle=False)
-    _vehicle(entities, "Motorcycle", plan.motorcycle_blueprint_id, motorcycle=True)
+    _vehicle(entities, EGO, plan.ego_blueprint_id, motorcycle=False)
+    _vehicle(entities, MOTORCYCLE, plan.motorcycle_blueprint_id, motorcycle=True)
     storyboard = ET.SubElement(root, "Storyboard")
     init_actions = ET.SubElement(ET.SubElement(storyboard, "Init"), "Actions")
     _environment(ET.SubElement(init_actions, "GlobalAction"), plan)
-    _init_actor(init_actions, "Ego", site.ego_lane.road_id, site.ego_lane.lane_id, site.ego_s, plan.ego_speed_kmh)
-    _init_actor(init_actions, "Motorcycle", site.motorcycle_lane.road_id, site.motorcycle_lane.lane_id,
+    _init_actor(init_actions, EGO, site.ego_lane.road_id, site.ego_lane.lane_id, site.ego_s, plan.ego_speed_kmh)
+    _init_actor(init_actions, MOTORCYCLE, site.motorcycle_lane.road_id, site.motorcycle_lane.lane_id,
                 motorcycle_s, plan.motorcycle_speed_kmh)
 
     story = ET.SubElement(storyboard, "Story", {"name": "MotorcycleCutIn"})
     act = ET.SubElement(story, "Act", {"name": "CutInAct"})
     group = ET.SubElement(act, "ManeuverGroup", {"name": "MotorcycleManeuver", "maximumExecutionCount": "1"})
     ET.SubElement(ET.SubElement(group, "Actors", {"selectTriggeringEntities": "false"}), "EntityRef", {
-        "entityRef": "Motorcycle",
+        "entityRef": MOTORCYCLE,
     })
     maneuver = ET.SubElement(group, "Maneuver", {"name": "CutIn"})
     event = ET.SubElement(maneuver, "Event", {"name": "LaneChange", "priority": "overwrite"})
@@ -168,11 +176,11 @@ def render_xosc(plan: CutInPlan, variant: SampledVariant, snapshot: SelectedSnap
         "value": _number(plan.motorcycle_speed_kmh / 3.6 * plan.lane_change_duration_s),
     })
     ET.SubElement(ET.SubElement(lane_change, "LaneChangeTarget"), "RelativeTargetLane", {
-        "entityRef": "Ego", "value": "1" if site.target_side == "left" else "-1",
+        "entityRef": EGO, "value": "1" if site.target_side == "left" else "-1",
     })
     _trigger(ET.SubElement(event, "StartTrigger"), "StartLaneChange", plan.trigger_time_s)
     _trigger(ET.SubElement(act, "StartTrigger"), "StartAct", 0)
-    end_time = plan.trigger_time_s + plan.lane_change_duration_s + 0.1
+    end_time = plan.trigger_time_s + plan.lane_change_duration_s + OBSERVE_AFTER_S
     _trigger(ET.SubElement(act, "StopTrigger"), "EndAct", end_time)
     stop = ET.SubElement(storyboard, "StopTrigger")
     _trigger(stop, "EndScenario", end_time)

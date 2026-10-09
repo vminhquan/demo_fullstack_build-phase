@@ -22,13 +22,13 @@ def test_exports_deterministic_xosc_using_site_lanes_and_plan() -> None:
     positions = {node.get("entityRef"): node.find("PrivateAction/TeleportAction/Position/LanePosition")
                  for node in root.findall("Storyboard/Init/Actions/Private")}
     assert root.find("RoadNetwork/LogicFile").get("filepath") == "Town01"
-    assert positions["Ego"].attrib == {"roadId": "1", "laneId": "-1", "s": "10", "offset": "0"}
+    assert positions["hero"].attrib == {"roadId": "1", "laneId": "-1", "s": "10", "offset": "0"}
     assert positions["Motorcycle"].attrib == {"roadId": "1", "laneId": "-2", "s": "20", "offset": "0"}
     assert root.find(".//RelativeTargetLane").get("value") == "1"
     assert root.find(".//LaneChangeActionDynamics").get("dynamicsDimension") == "distance"
     assert root.find(".//RoadCondition").get("frictionScaleFactor") == "0.6"
     assert root.find(".//Precipitation").get("precipitationType") == "rain"
-    assert root.find(".//Private[@entityRef='Ego']//AbsoluteTargetSpeed").get("value") == "10.277778"
+    assert root.find(".//Private[@entityRef='hero']//AbsoluteTargetSpeed").get("value") == "10.277778"
     assert digest == hashlib.sha256(xml.encode()).hexdigest()
     assert render_xosc(proposed, sampled, selected) == (xml, digest)
 
@@ -79,4 +79,11 @@ def test_scenario_runner_recognises_the_ego() -> None:
     root = ET.fromstring(render_xosc(plan(), variant(), snapshot("Town01", 1))[0])
     types = {item.get("name"): item.find("Vehicle/Properties/Property[@name='type']").get("value")
              for item in root.findall("Entities/ScenarioObject")}
-    assert types == {"Ego": "ego_vehicle", "Motorcycle": "simulation"}
+    assert types == {"hero": "ego_vehicle", "Motorcycle": "simulation"}
+
+
+def test_scenario_keeps_running_after_the_cut_in_to_judge_it() -> None:
+    proposed = plan()
+    root = ET.fromstring(render_xosc(proposed, variant(), snapshot("Town01", 1))[0])
+    end = root.find("Storyboard/Story/Act/StopTrigger//SimulationTimeCondition").get("value")
+    assert float(end) == proposed.trigger_time_s + proposed.lane_change_duration_s + 4.0
