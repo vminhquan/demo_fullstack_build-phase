@@ -61,6 +61,9 @@ services:
         sync: false
       - key: AGENT2_MODEL_NAME
         value: gpt-4o-mini
+      # Tool calls read stored snapshots from the Backend's internal endpoints (same AGENT_API_KEY).
+      - key: BACKEND_URL
+        value: https://scenario-forge-api.onrender.com
 
   - type: web
     name: scenario-forge-web

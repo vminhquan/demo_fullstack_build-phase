@@ -29,6 +29,8 @@ LATE_CATALOG_FIELDS = (
 )
 LATE_WAYPOINT_FIELDS = ("junction_id", "lane_change", "left_marking", "right_marking", "left_lane", "right_lane")
 LATE_VEHICLE_FIELDS = ("length_m", "width_m", "height_m")
+# CARLA hands out new actor ids every time a map is loaded: hashing them made each sync a "new" snapshot.
+RUNTIME_TRAFFIC_LIGHT_FIELDS = ("actor_id", "group_actor_ids")
 LATE_SITE_FIELDS = (
     "ego_s", "motorcycle_s", "s_direction", "target_side", "upstream_length_m", "lane_change_allowed_throughout",
     "marking_between", "max_heading_change_deg", "first_junction_m", "ends_at", "lane_width_m", "speed_limit_kmh",
@@ -51,6 +53,9 @@ def content_hash(catalog: CatalogV1) -> str:
         _drop_absent(waypoint, LATE_WAYPOINT_FIELDS)
     for blueprint in canonical["vehicles"] + canonical["walkers"]:
         _drop_absent(blueprint, LATE_VEHICLE_FIELDS)
+    for light in canonical.get("traffic_lights") or []:
+        for key in RUNTIME_TRAFFIC_LIGHT_FIELDS:
+            light.pop(key, None)
     # Preserve hashes of catalogs created before cut_in_sites was added to catalog.v1.
     if canonical["cut_in_sites"] is None:
         del canonical["cut_in_sites"]

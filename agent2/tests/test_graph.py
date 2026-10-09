@@ -25,7 +25,7 @@ def test_graph_routes_recoverable_validation_back_to_llm() -> None:
         def __init__(self):
             self.feedbacks = []
 
-        def propose_maneuver(self, prompt, variant, *, feedback=None):
+        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
             self.feedbacks.append(feedback or [])
             offset = 0 if len(self.feedbacks) == 1 else 10
             return CutInPlan.model_validate({**variant.context.model_dump(),
@@ -45,7 +45,7 @@ def test_graph_stops_after_configured_attempt_limit() -> None:
     class InvalidLLM(FakeLLM):
         calls = 0
 
-        def propose_maneuver(self, prompt, variant, *, feedback=None):
+        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
             self.calls += 1
             return CutInPlan.model_validate({**variant.context.model_dump(),
                                              "motorcycle_start_offset_m": 0,
@@ -64,7 +64,7 @@ def test_graph_does_not_retry_site_error_with_llm() -> None:
     class CountingLLM(FakeLLM):
         calls = 0
 
-        def propose_maneuver(self, prompt, variant, *, feedback=None):
+        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
             self.calls += 1
             return super().propose_maneuver(prompt, variant, feedback=feedback)
 
@@ -90,10 +90,10 @@ def test_graph_covers_selected_maps_and_keeps_catalog_out_of_state() -> None:
 
 def test_graph_clarification_ends_before_site_search() -> None:
     class AmbiguousLLM(FakeLLM):
-        def extract_constraints(self, prompt):
+        def extract_constraints(self, prompt, *, tools=None, map_names=None):
             return PromptConstraints(ambiguities=["Tốc độ này thuộc xe nào?"])
 
-        def propose_maneuver(self, prompt, variant, *, feedback=None):
+        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
             raise AssertionError("Maneuver must not be proposed when the prompt is ambiguous")
 
     body = request()
@@ -121,7 +121,7 @@ def test_sessions_are_isolated_and_multi_variant_run_exceeds_default_graph_limit
 
 def test_failure_on_one_map_keeps_valid_scenario_from_other_map() -> None:
     class OneMapFailsLLM(FakeLLM):
-        def propose_maneuver(self, prompt, variant, *, feedback=None):
+        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
             if variant.site.snapshot.map_name == "Town03":
                 raise LLMCallError("LLM_REFUSAL", "Không có đề xuất cho map này.")
             return super().propose_maneuver(prompt, variant, feedback=feedback)
@@ -138,7 +138,7 @@ def test_failure_on_one_map_keeps_valid_scenario_from_other_map() -> None:
 
 def test_prompt_llm_error_fails_all_selected_maps_before_site_search() -> None:
     class BrokenLLM(FakeLLM):
-        def extract_constraints(self, prompt):
+        def extract_constraints(self, prompt, *, tools=None, map_names=None):
             raise LLMCallError("LLM_EMPTY_RESPONSE", "Không có dữ liệu.")
 
     result = generate(request(), BrokenLLM())

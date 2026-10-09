@@ -118,3 +118,5 @@ class GraphContext(TypedDict):
     selected_snapshots: list[SelectedSnapshot]
     request: GenerationRequest
     llm: Any
+    # Backend catalog reads for tool calls (app.llm.tools.CatalogApi); None when BACKEND_URL is not set.
+    catalog_api: Any

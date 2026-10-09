@@ -1,10 +1,19 @@
+from functools import lru_cache
+
 from app.config import get_settings
 from app.contracts import GenerationRequest, GenerationResponse
 from app.llm.client import LLMCallError, from_settings
+from app.llm.tools import CatalogApi
 from app.service import generate
 from fastapi import FastAPI, Header, HTTPException
 
 app = FastAPI(title="Scenario Forge Agent 2")
+
+
+@lru_cache
+def _catalog_api(backend_url: str, api_key: str | None) -> CatalogApi:
+    # One pooled HTTP client for the process, not one per request.
+    return CatalogApi(backend_url, api_key)
 
 
 @app.get("/health")
@@ -23,7 +32,8 @@ def generate_scenarios(body: GenerationRequest, x_api_key: str | None = Header(d
         llm = from_settings(settings)
     except LLMCallError as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
-    result = generate(body, llm)
+    key = settings.agent_api_key.get_secret_value() if settings.agent_api_key else None
+    result = generate(body, llm, _catalog_api(settings.backend_url, key) if settings.backend_url else None)
     if result.status in {"failed", "needs_clarification"}:
         first = result.map_failures[0] if result.map_failures else None
         raise HTTPException(status_code=422, detail={

@@ -20,6 +20,8 @@ class Settings(BaseSettings):
         validation_alias="OPENAI_API_KEY",
     )
     agent_api_key: SecretStr | None = Field(default=None, validation_alias="AGENT_API_KEY")
+    # Backend base URL (e.g. http://backend:8000) for the catalog tool calls; unset disables those tools.
+    backend_url: str | None = Field(default=None, validation_alias="BACKEND_URL")
     model_name: str = Field(
         default="gpt-4o-mini",
         validation_alias="AGENT2_MODEL_NAME",

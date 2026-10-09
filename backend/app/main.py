@@ -17,6 +17,7 @@ from app.modules.bridge.runs_router import router as simulator_runs_router
 from app.modules.bridge.router import router as bridge_router
 from app.modules.builder.router import router as builder_router
 from app.modules.builder.service import fail_interrupted_sessions
+from app.modules.catalog.internal_router import router as catalog_internal_router
 from app.modules.catalog.router import router as catalog_router
 from app.modules.dashboard.router import router as dashboard_router
 from app.modules.execution.router import router as execution_router
@@ -92,8 +93,8 @@ async def health_ready() -> dict[str, str]:
     return {"status": "ready"}
 
 
-# Account, project list/administration and the Bridge device endpoints are not inside one project.
-for router in (auth_router, project_router, bridge_public_router):
+# Account, project list/administration, the Bridge device endpoints and agent2's catalog reads are not inside one project.
+for router in (auth_router, project_router, bridge_public_router, catalog_internal_router):
     app.include_router(router, prefix=settings.api_prefix)
 
 # Everything else belongs to one project: /api/v1/projects/{project_id}/…

@@ -27,11 +27,25 @@ Chọn số phù hợp với available_length_m, hai tốc độ và mục tiêu
 Không đề xuất tọa độ, tên map, site, blueprint, thời tiết hoặc XOSC. Nếu có feedback kiểm tra, sửa bốn tham số theo feedback."""
 
 
-def extraction_messages(prompt: str) -> list[dict[str, str]]:
-    return [{"role": "system", "content": EXTRACT_SYSTEM}, {"role": "user", "content": prompt}]
+EXTRACT_TOOLS = """Map đã chọn: {maps}.
+Nếu prompt nêu địa điểm, loại đường hoặc tốc độ, có thể gọi search_cut_in_sites để xem map có đoạn đường như vậy không.
+Kết quả tool chỉ để kiểm tra; vẫn chỉ ghi điều kiện người dùng nói rõ.
+Nếu không map nào có đoạn đường thỏa yêu cầu người dùng nói rõ, ghi lý do vào unsupported_requirements."""
+
+PROPOSE_TOOLS = {
+    "get_site_context": "Gọi get_site_context để xem biển tốc độ, đèn, biển dừng, vạch qua đường và giao lộ trên hành lang.",
+    "check_cut_in": "Gọi check_cut_in với bốn tham số dự định; chỉ trả lời khi valid, hoặc khi đã sửa theo lỗi tool báo.",
+}
 
 
-def proposal_messages(prompt: str, variant: SampledVariant, feedback: list[str] | None = None) -> list[dict[str, str]]:
+def extraction_messages(prompt: str, map_names: list[str] | None = None) -> list[dict[str, str]]:
+    system = EXTRACT_SYSTEM if not map_names else f"{EXTRACT_SYSTEM}\n{EXTRACT_TOOLS.format(maps=', '.join(map_names))}"
+    return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+
+
+def proposal_messages(
+    prompt: str, variant: SampledVariant, feedback: list[str] | None = None, *, tool_names: list[str] | None = None,
+) -> list[dict[str, str]]:
     site, context = variant.site, variant.context
     facts = {
         "prompt": prompt,
@@ -46,5 +60,6 @@ def proposal_messages(prompt: str, variant: SampledVariant, feedback: list[str] 
         "road_surface": context.environment.road_surface,
         "feedback": feedback or [],
     }
-    return [{"role": "system", "content": PROPOSE_SYSTEM},
+    hints = [PROPOSE_TOOLS[name] for name in tool_names or [] if name in PROPOSE_TOOLS]
+    return [{"role": "system", "content": "\n".join([PROPOSE_SYSTEM, *hints])},
             {"role": "user", "content": json.dumps(facts, ensure_ascii=False, sort_keys=True)}]

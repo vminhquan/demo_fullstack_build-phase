@@ -1,7 +1,9 @@
 """LangGraph workflow for catalog-grounded motorcycle cut-in generation.
 
-Only prompt interpretation and maneuver proposal call the LLM. Every map,
-vehicle, environment and XOSC decision is delegated to deterministic Python.
+Only prompt interpretation and maneuver proposal call the LLM; both may call
+tools (app.llm.tools) that read the stored snapshot through the Backend or run
+the validator. Every map, vehicle, environment and XOSC decision is delegated to
+deterministic Python.
 The full catalogs and LLM client live in runtime context, outside graph state.
 """
 
@@ -23,6 +25,7 @@ from app.cut_in.sample import SampledVariant, SamplingError, sample_variants
 from app.cut_in.validate import validate_cut_in
 from app.cut_in.xosc import XoscExportError, render_xosc
 from app.llm.client import LLMCallError
+from app.llm.tools import CatalogApi, ExtractionTools, ProposalTools, Toolbox
 from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 
@@ -30,9 +33,13 @@ from langgraph.runtime import Runtime
 class GeneratorLLM(Protocol):
     model_name: str
 
-    def extract_constraints(self, prompt: str) -> PromptConstraints: ...
+    def extract_constraints(
+        self, prompt: str, *, tools: Toolbox | None = None, map_names: list[str] | None = None,
+    ) -> PromptConstraints: ...
 
-    def propose_maneuver(self, prompt: str, variant: SampledVariant, *, feedback: list[str] | None = None) -> CutInPlan: ...
+    def propose_maneuver(
+        self, prompt: str, variant: SampledVariant, *, feedback: list[str] | None = None, tools: Toolbox | None = None,
+    ) -> CutInPlan: ...
 
 
 def initial_state(request: GenerationRequest, seed: int) -> GraphState:
@@ -67,8 +74,13 @@ def _snapshot(runtime: Runtime[GraphContext], variant: SampledVariant):
 
 def extract_constraints(state: GraphState, runtime: Runtime[GraphContext]) -> dict:
     request = runtime.context["request"]
+    api = runtime.context.get("catalog_api")
+    refs = [item.ref for item in runtime.context["selected_snapshots"]]
+    tools = ExtractionTools(api, refs) if api is not None else None
     try:
-        constraints = _llm(runtime).extract_constraints(state["prompt"]).model_copy(deep=True)
+        constraints = _llm(runtime).extract_constraints(
+            state["prompt"], tools=tools, map_names=[ref.map_name for ref in refs],
+        ).model_copy(deep=True)
     except LLMCallError as exc:
         return {"status": "failed", "map_failures": [
             MapFailure(snapshot=item.ref, code=exc.code, message=str(exc))
@@ -128,8 +140,10 @@ def select_variant(state: GraphState) -> dict:
 
 
 def propose_maneuver(state: GraphState, runtime: Runtime[GraphContext]) -> dict:
+    variant = _variant(state)
+    tools = ProposalTools(runtime.context.get("catalog_api"), variant, _snapshot(runtime, variant))
     try:
-        plan = _llm(runtime).propose_maneuver(state["prompt"], _variant(state), feedback=state["feedback"])
+        plan = _llm(runtime).propose_maneuver(state["prompt"], variant, feedback=state["feedback"], tools=tools)
     except LLMCallError as exc:
         return {"current_plan": None, "proposal_attempts": state["proposal_attempts"] + 1,
                 "feedback": [f"{exc.code}: {exc}"]}
@@ -234,12 +248,13 @@ def build_graph():
 GENERATION_GRAPH = build_graph()
 
 
-def run_graph(request: GenerationRequest, llm: GeneratorLLM, seed: int) -> GraphState:
+def run_graph(request: GenerationRequest, llm: GeneratorLLM, seed: int, catalog_api: CatalogApi | None = None) -> GraphState:
     # The bound is proportional to variants and possible repair turns; the
     # LangGraph default of 25 steps is too small for multi-map sessions.
     step_limit = max(50, request.target_count * (2 * request.max_proposal_attempts + 6) + 10)
     return cast(GraphState, GENERATION_GRAPH.invoke(
         initial_state(request, seed),
-        context={"request": request, "selected_snapshots": request.selected_snapshots, "llm": llm},
+        context={"request": request, "selected_snapshots": request.selected_snapshots, "llm": llm,
+                 "catalog_api": catalog_api},
         config={"recursion_limit": step_limit},
     ))

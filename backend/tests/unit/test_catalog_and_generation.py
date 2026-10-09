@@ -344,3 +344,13 @@ def test_map_data_hash_changes_with_the_opendrive():
     waypoints = [{"road_id": 1, "lane_id": -1, "s": 0.0}]
     assert pack_map_data(waypoints, "a" * 64, None)["data_hash"] != pack_map_data(waypoints, "b" * 64, None)["data_hash"]
     assert pack_map_data(waypoints, None, None)["opendrive_gz"] is None
+
+
+def test_reloading_the_map_in_carla_does_not_make_a_new_snapshot():
+    first = v2_document()
+    again = json.loads(json.dumps(first))
+    again["traffic_lights"][0]["actor_id"] = 4243
+    again["traffic_lights"][0]["group_actor_ids"] = [4243, 4252]
+    assert content_hash(parse_catalog(first)) == content_hash(parse_catalog(again))
+    again["traffic_lights"][0]["opendrive_id"] = "964"
+    assert content_hash(parse_catalog(first)) != content_hash(parse_catalog(again))

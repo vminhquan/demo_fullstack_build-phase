@@ -43,10 +43,12 @@ services:
 
   agent2:
     build: ./agent2
-    # Agent2 receives selected CARLA snapshots from the Backend; no database access.
+    # Agent2 receives selected CARLA snapshots from the Backend; no database access. Its tool calls read
+    # the stored snapshots back through the Backend's internal catalog endpoints.
     environment:
       APP_ENV: ${APP_ENV:-development}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
+      BACKEND_URL: http://backend:8000
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AGENT2_MODEL_NAME: ${AGENT2_MODEL_NAME:-gpt-4o-mini}
     expose:

@@ -11,10 +11,10 @@ from test_sample import snapshot
 class FakeLLM:
     model_name = "test-llm"
 
-    def extract_constraints(self, prompt: str) -> PromptConstraints:
+    def extract_constraints(self, prompt: str, *, tools=None, map_names=None) -> PromptConstraints:
         return PromptConstraints(ego_speed_kmh=37, motorcycle_speed_kmh=43)
 
-    def propose_maneuver(self, prompt, variant, *, feedback=None) -> CutInPlan:
+    def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None) -> CutInPlan:
         return CutInPlan.model_validate({**variant.context.model_dump(),
                                          "motorcycle_start_offset_m": 10,
                                          "trigger_time_s": 0.5,
@@ -49,6 +49,7 @@ def test_http_boundary_requires_key_and_returns_agent2_contract(monkeypatch) -> 
     class Settings:
         agent_api_key = SecretStr("test-key")
         model_name = "test-llm"
+        backend_url = None
 
     monkeypatch.setattr(api, "get_settings", Settings)
     monkeypatch.setattr(api, "from_settings", lambda settings: FakeLLM())

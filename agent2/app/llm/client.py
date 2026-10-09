@@ -8,7 +8,12 @@ from app.config import Settings, get_settings
 from app.cut_in.model import CutInPlan, PromptConstraints
 from app.cut_in.sample import SampledVariant
 from app.llm.prompts import extraction_messages, proposal_messages
+from app.llm.tools import Toolbox, tool_result
 from pydantic import BaseModel, ValidationError
+
+
+# Rounds in which the model may call tools; the round after them must answer.
+MAX_TOOL_ROUNDS = 4
 
 
 class LLMCallError(RuntimeError):
@@ -40,6 +45,8 @@ class _ManeuverProposal(BaseModel):
 class OpenAILLM:
     def __init__(self, *, model_name: str = "gpt-4o-mini", api_key: str | None = None, sdk_client: Any | None = None):
         self.model_name = model_name
+        # Names of the tools the model called, in order, for tests and diagnostics.
+        self.tool_calls: list[str] = []
         if sdk_client is not None:
             self._client = sdk_client
         else:
@@ -49,16 +56,38 @@ class OpenAILLM:
 
             self._client = OpenAI(api_key=api_key, timeout=30.0, max_retries=2)
 
-    def _parse(self, messages: list[dict[str, str]], schema: type[BaseModel]) -> BaseModel:
-        completion = self._client.chat.completions.parse(
-            model=self.model_name,
-            messages=messages,
-            response_format=schema,
-            temperature=0,
-        )
-        if not completion.choices:
-            raise LLMCallError("LLM_EMPTY_RESPONSE", "OpenAI không trả kết quả.")
-        choice = completion.choices[0]
+    def _parse(self, messages: list[dict[str, Any]], schema: type[BaseModel], tools: Toolbox | None = None) -> BaseModel:
+        messages = list(messages)
+        for round_no in range(MAX_TOOL_ROUNDS + 1):
+            offered: dict[str, Any] = {}
+            if tools is not None and tools.specs:
+                # The last round keeps the tool list (the history refers to it) but forbids calling it.
+                offered = {"tools": tools.specs, **({"tool_choice": "none"} if round_no == MAX_TOOL_ROUNDS else {})}
+            completion = self._client.chat.completions.parse(
+                model=self.model_name,
+                messages=messages,
+                response_format=schema,
+                temperature=0,
+                **offered,
+            )
+            if not completion.choices:
+                raise LLMCallError("LLM_EMPTY_RESPONSE", "OpenAI không trả kết quả.")
+            choice = completion.choices[0]
+            calls = getattr(choice.message, "tool_calls", None)
+            if not (tools is not None and calls):
+                return self._answer(choice, schema)
+            messages.append({"role": "assistant", "content": choice.message.content, "tool_calls": [
+                {"id": call.id, "type": "function",
+                 "function": {"name": call.function.name, "arguments": call.function.arguments}}
+                for call in calls
+            ]})
+            for call in calls:
+                self.tool_calls.append(call.function.name)
+                messages.append({"role": "tool", "tool_call_id": call.id,
+                                 "content": tool_result(tools, call.function.name, call.function.arguments)})
+        raise LLMCallError("LLM_TOOL_LOOP", "OpenAI vẫn gọi tool sau khi đã bị cấm.")
+
+    def _answer(self, choice: Any, schema: type[BaseModel]) -> BaseModel:
         if choice.finish_reason != "stop":
             raise LLMCallError("LLM_INCOMPLETE_RESPONSE", f"OpenAI kết thúc trước khi có kết quả đầy đủ: {choice.finish_reason}")
         if choice.message.refusal:
@@ -70,17 +99,20 @@ class OpenAILLM:
         except ValidationError as exc:
             raise LLMCallError("LLM_UNPARSEABLE_RESPONSE", "OpenAI trả dữ liệu không hợp lệ theo schema.") from exc
 
-    def extract_constraints(self, prompt: str) -> PromptConstraints:
+    def extract_constraints(self, prompt: str, *, tools: Toolbox | None = None, map_names: list[str] | None = None) -> PromptConstraints:
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
-        parsed = self._parse(extraction_messages(prompt), _PromptExtraction)
+        parsed = self._parse(extraction_messages(prompt, map_names if tools else None), _PromptExtraction, tools)
         try:
             return PromptConstraints.model_validate(parsed.model_dump())
         except ValidationError as exc:
             raise LLMCallError("LLM_INVALID_CONSTRAINTS", "Ràng buộc trích từ prompt không hợp lệ.") from exc
 
-    def propose_maneuver(self, prompt: str, variant: SampledVariant, *, feedback: list[str] | None = None) -> CutInPlan:
-        proposal = self._parse(proposal_messages(prompt, variant, feedback), _ManeuverProposal)
+    def propose_maneuver(
+        self, prompt: str, variant: SampledVariant, *, feedback: list[str] | None = None, tools: Toolbox | None = None,
+    ) -> CutInPlan:
+        names = [spec["function"]["name"] for spec in tools.specs] if tools else []
+        proposal = self._parse(proposal_messages(prompt, variant, feedback, tool_names=names), _ManeuverProposal, tools)
         try:
             return CutInPlan.model_validate({**variant.context.model_dump(), **proposal.model_dump()})
         except ValidationError as exc:
