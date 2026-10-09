@@ -35,9 +35,9 @@ services:
       # Frontend origin, e.g. https://scenario-forge-web.onrender.com (set after the first deploy).
       - key: CORS_ORIGINS
         sync: false
-      # Existing Agent service URL, e.g. https://scenario-forge-agent.onrender.com.
+      # Keep the Backend URL paired with the Agent key referenced below.
       - key: AGENT_SERVICE_URL
-        sync: false
+        value: https://scenario-forge-agent.onrender.com
       - key: AGENT_API_KEY
         fromService:
           type: web
