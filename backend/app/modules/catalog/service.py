@@ -19,25 +19,53 @@ from app.shared.infrastructure.audit import record_audit
 from app.shared.infrastructure.models import CarlaCatalogSnapshot, CatalogSource
 
 
+# Fields added after catalog.v1 shipped: left out of the digest while absent, so older snapshots keep their hash.
+LATE_CATALOG_FIELDS = (
+    "weather_parameters", "road_speeds", "junctions", "landmarks", "traffic_lights", "crosswalks", "topology",
+    "extraction_errors",
+)
+LATE_WAYPOINT_FIELDS = ("junction_id", "lane_change", "left_marking", "right_marking", "left_lane", "right_lane")
+LATE_VEHICLE_FIELDS = ("length_m", "width_m", "height_m")
+LATE_SITE_FIELDS = (
+    "ego_s", "motorcycle_s", "s_direction", "target_side", "upstream_length_m", "lane_change_allowed_throughout",
+    "marking_between", "max_heading_change_deg", "first_junction_m", "ends_at", "lane_width_m", "speed_limit_kmh",
+)
+
+
+def _drop_absent(item: dict[str, Any], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        if item.get(key) is None:
+            item.pop(key, None)
+
+
 def content_hash(catalog: CatalogV1) -> str:
-    """Stable digest of the catalog content (ignores any hash the sender put in the document)."""
-    canonical = catalog.model_dump(mode="json", exclude={"content_hash"})
+    """Stable digest of the catalog content (ignores any hash the sender put in the document).
+
+    The OpenDRIVE text is covered by opendrive_hash, so it is not hashed twice."""
+    canonical = catalog.model_dump(mode="json", exclude={"content_hash", "opendrive_xml"})
+    _drop_absent(canonical, LATE_CATALOG_FIELDS)
+    for waypoint in canonical["waypoints"]:
+        _drop_absent(waypoint, LATE_WAYPOINT_FIELDS)
+    for blueprint in canonical["vehicles"] + canonical["walkers"]:
+        _drop_absent(blueprint, LATE_VEHICLE_FIELDS)
     # Preserve hashes of catalogs created before cut_in_sites was added to catalog.v1.
     if canonical["cut_in_sites"] is None:
         del canonical["cut_in_sites"]
     else:
         for site in canonical["cut_in_sites"]:
-            for key in ("ego_s", "motorcycle_s", "s_direction", "target_side"):
-                if site[key] is None:
-                    del site[key]
+            _drop_absent(site, LATE_SITE_FIELDS)
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def parse_catalog(raw: dict[str, Any]) -> CatalogV1:
     try:
-        return CatalogV1.model_validate(raw)
+        catalog = CatalogV1.model_validate(raw)
     except ValueError as exc:
-        raise ValidationFailed("Document is not a valid scenario-forge.catalog.v1 catalog", {"errors": str(exc)[:2000]}) from exc
+        raise ValidationFailed("Document is not a valid scenario-forge catalog (v1/v2)", {"errors": str(exc)[:2000]}) from exc
+    if catalog.opendrive_xml is not None and catalog.opendrive_hash is not None:
+        if hashlib.sha256(catalog.opendrive_xml.encode("utf-8")).hexdigest() != catalog.opendrive_hash:
+            raise ValidationFailed("opendrive_xml does not match opendrive_hash")
+    return catalog
 
 
 async def ingest_snapshot(
@@ -50,15 +78,22 @@ async def ingest_snapshot(
     worker_installation_id: int | None = None,
     label: str | None = None,
 ) -> tuple[CarlaCatalogSnapshot, bool]:
-    """Store a snapshot unless the same content already exists in that scope. Returns (snapshot, created)."""
+    """Store a snapshot unless the same content already exists in that scope. Returns (snapshot, created).
+
+    The OpenDRIVE text goes to its own deferred column: the JSON document is what the Agent receives."""
     if (source is CatalogSource.DEFAULT) != (project_id is None):
         raise ValidationFailed("DEFAULT snapshots are global; IMPORT/WORKER snapshots belong to a project")
     digest = content_hash(catalog)
     scope = CarlaCatalogSnapshot.project_id.is_(None) if project_id is None else CarlaCatalogSnapshot.project_id == project_id
-    existing = await session.scalar(select(CarlaCatalogSnapshot).where(scope, CarlaCatalogSnapshot.content_hash == digest))
+    existing = await session.scalar(
+        select(CarlaCatalogSnapshot).where(scope, CarlaCatalogSnapshot.content_hash == digest)
+        .options(undefer(CarlaCatalogSnapshot.opendrive_xml))
+    )
     if existing is not None:
+        if existing.opendrive_xml is None and catalog.opendrive_xml is not None:
+            existing.opendrive_xml = catalog.opendrive_xml
         return existing, False
-    document = catalog.model_dump(mode="json", exclude_none=True)
+    document = catalog.model_dump(mode="json", exclude_none=True, exclude={"opendrive_xml"})
     document["content_hash"] = digest
     snapshot = CarlaCatalogSnapshot(
         project_id=project_id,
@@ -72,6 +107,7 @@ async def ingest_snapshot(
         vehicle_count=len(catalog.vehicles),
         walker_count=len(catalog.walkers),
         catalog=document,
+        opendrive_xml=catalog.opendrive_xml,
         label=label,
         created_by=actor_user_id,
     )

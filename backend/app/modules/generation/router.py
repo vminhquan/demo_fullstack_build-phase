@@ -106,6 +106,19 @@ async def call_agent(session: AsyncSession, actor: Principal, kind: str, request
     return result
 
 
+def require_car_ego(snapshot: CarlaCatalogSnapshot, ego_vehicle_code: str | None) -> str:
+    """The user fixes the ego on every generation: Agent2 only drives a car ego and no longer picks one itself."""
+    if not ego_vehicle_code:
+        raise ValidationFailed("Pick an ego vehicle: the Agent does not choose one", {"field": "ego_vehicle_code"})
+    cars = {item.get("id") for item in snapshot.catalog.get("vehicles") or [] if (item.get("base_type") or "").lower() == "car"}
+    if ego_vehicle_code not in cars:
+        raise ValidationFailed(
+            f"Ego vehicle '{ego_vehicle_code}' is not a car in the CARLA data of {snapshot.map_name}",
+            {"field": "ego_vehicle_code", "map_code": snapshot.map_name, "ego_vehicle_code": ego_vehicle_code},
+        )
+    return ego_vehicle_code
+
+
 async def snapshot_for_map(session: AsyncSession, project_id: int, snapshot_id: int | None, map_code: str) -> CarlaCatalogSnapshot:
     """CARLA data with lanes for `map_code`: the given snapshot, else the user's own data, else the shipped default."""
     if snapshot_id is not None:
@@ -152,8 +165,6 @@ async def create_generation(
     if body.metadata is not None:
         snapshot = await snapshot_for_map(session, actor.project_id, body.catalog_snapshot_id, body.metadata.map_code)
         meta = body.metadata
-        if meta.ego_vehicle_code and meta.ego_vehicle_code not in {item.get("id") for item in snapshot.catalog.get("vehicles", [])}:
-            raise ValidationFailed(f"Ego vehicle '{meta.ego_vehicle_code}' is not in the CARLA data of {snapshot.map_name}")
         constraints = {
             **metadata_constraints(ego_vehicle_code=meta.ego_vehicle_code, adversary_type=meta.adversary_type, environment_code=meta.environment_code),
             **(constraints or {}),
@@ -162,6 +173,7 @@ async def create_generation(
         snapshot = await resolve_for_generation(
             session, actor.project_id, snapshot_id=body.catalog_snapshot_id, source=body.catalog_source, map_name=body.map_name
         )
+    require_car_ego(snapshot, (constraints or {}).get("ego_blueprint"))
     key = request_hash(body.prompt, snapshot.content_hash, constraints, body.seed, body.auto_repair)
     context = {"catalog_snapshot_id": snapshot.id, "from_form": body.spec is not None or constraints is not None}
     cached = None

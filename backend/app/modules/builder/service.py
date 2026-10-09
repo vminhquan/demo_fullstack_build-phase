@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.builder.schemas import BuilderMapOptions, BuilderSessionCreate
 from app.modules.generation.agent_client import AgentPort
-from app.modules.generation.router import create_generation, save_generation_as_case
+from app.modules.generation.router import create_generation, require_car_ego, save_generation_as_case, snapshot_for_map
 from app.modules.generation.schemas import GenerationAccept, GenerationCreate, GenerationMetadata
 from app.modules.identity.dependencies import Principal
 from app.shared.domain.errors import DomainError, NotFound
@@ -41,6 +41,7 @@ _running: set[asyncio.Task[None]] = set()
 class Variant:
     no: int  # 1..TARGET_COUNT
     map_code: str
+    catalog_snapshot_id: int | None
     ego_vehicle_code: str | None
     adversary_type: str | None
     environment_code: str | None
@@ -61,6 +62,7 @@ def plan_variants(maps: list[BuilderMapOptions], target: int = TARGET_COUNT) -> 
         variants.append(Variant(
             no=index + 1,
             map_code=options.map_code,
+            catalog_snapshot_id=options.catalog_snapshot_id,
             ego_vehicle_code=pick(options.ego_vehicle_codes),
             adversary_type=pick(options.adversary_types),
             environment_code=pick(options.environment_codes),
@@ -86,7 +88,17 @@ def case_title(builder: BuilderSession, variant: Variant) -> str:
     return f"{builder.title[: 300 - len(suffix)]}{suffix}"
 
 
+async def check_ego_vehicles(session: AsyncSession, project_id: int, maps: list[BuilderMapOptions]) -> None:
+    """Check every picked ego up front, against the CARLA data each variant will use: otherwise a bad pick would
+    fail all ten variants in the background instead of here."""
+    for item in maps:
+        snapshot = await snapshot_for_map(session, project_id, item.catalog_snapshot_id, item.map_code)
+        for code in item.ego_vehicle_codes:
+            require_car_ego(snapshot, code)
+
+
 async def create_session(session: AsyncSession, actor: Principal, body: BuilderSessionCreate) -> BuilderSession:
+    await check_ego_vehicles(session, actor.project_id, body.maps)
     typed = (body.title or "").strip()
     builder = BuilderSession(
         project_id=actor.project_id,
@@ -161,6 +173,7 @@ async def run_variant(builder_id: int, builder: BuilderSession, actor: Principal
                     prompt=variant_prompt(builder.prompt, variant.no, builder.target_count),
                     catalog_source=builder.catalog_source,
                     seed=variant.no,
+                    catalog_snapshot_id=variant.catalog_snapshot_id,
                     # The map pins the CARLA data; each ticked value constrains the Agent, the rest is its choice.
                     metadata=GenerationMetadata(
                         map_code=variant.map_code,

@@ -5,10 +5,12 @@ import { labels } from "@/shared/auth/session-context";
 import { Icon } from "@/shared/ui/icons";
 
 /** Values ticked for one map (the map code is the key they are stored under). */
-export type MapOptions = Omit<BuilderMapOptions, "map_code">;
+export type MapOptions = Omit<BuilderMapOptions, "map_code" | "catalog_snapshot_id">;
 
 const DANGER_LEVELS: DangerLevel[] = ["LOW", "MEDIUM", "HIGH", "CRITICAL"];
 const EGO_GROUPS: Record<string, string> = { car: "Ô tô", van: "Xe van", truck: "Xe tải", bus: "Xe buýt" };
+// Agent2 only drives a car ego (the Backend rejects any other pick).
+const EGO_BASE_TYPES = ["car"];
 
 export const emptyMapOptions = (): MapOptions => ({
   ego_vehicle_codes: [],
@@ -24,7 +26,7 @@ export function choicesFor(options: MetadataOptions | null, snapshotIds: number[
   const inMap = (item: { snapshot_ids: number[] }) => item.snapshot_ids.some((id) => snapshotIds.includes(id));
   if (!options) return null;
   return {
-    egos: options.ego_vehicles.filter(inMap).map<Choice & { group: string }>((item) => ({ value: item.code, label: item.label, hint: item.code, group: EGO_GROUPS[item.base_type] ?? item.base_type })),
+    egos: options.ego_vehicles.filter((item) => inMap(item) && EGO_BASE_TYPES.includes(item.base_type)).map<Choice & { group: string }>((item) => ({ value: item.code, label: item.label, hint: item.code, group: EGO_GROUPS[item.base_type] ?? item.base_type })),
     adversaries: options.adversary_types.filter(inMap).map<Choice>((item) => ({ value: item.code, label: item.label, hint: item.code })),
     environments: options.environments.filter(inMap).map<Choice & { group: string }>((item) => ({ value: item.code, label: item.label, hint: item.code, group: item.group === "standard" ? "Điều kiện chuẩn" : "Preset thời tiết CARLA" })),
   };
@@ -81,13 +83,14 @@ export function MapPicker({
 /* ---------------------------------------------------------------- per-map tabs */
 
 function CheckGroup({
-  title, help, choices, values, disabled, onChange,
+  title, help, choices, values, disabled, required = false, onChange,
 }: {
   title: string;
   help: string;
   choices: (Choice & { group?: string })[];
   values: string[];
   disabled: boolean;
+  required?: boolean;
   onChange: (values: string[]) => void;
 }) {
   const groups = [...new Set(choices.map((choice) => choice.group ?? ""))];
@@ -96,7 +99,7 @@ function CheckGroup({
     <fieldset className="check-category" disabled={disabled}>
       <legend>
         {title}
-        <span className={`check-category-state ${values.length ? "chosen" : ""}`}>{values.length ? `Đã chọn ${values.length}` : "Agent tự chọn"}</span>
+        <span className={`check-category-state ${values.length ? "chosen" : ""}`}>{values.length ? `Đã chọn ${values.length}` : required ? "Bắt buộc" : "Agent tự chọn"}</span>
         {values.length > 0 && <button type="button" className="text-button" onClick={() => onChange([])}>Bỏ chọn</button>}
       </legend>
       <span className="field-help">{help}</span>
@@ -161,7 +164,7 @@ export function MapOptionTabs({
       <div className="map-tab-panel" role="tabpanel">
         <div className="map-tab-top">
           <span className="field-help">
-            Chọn bao nhiêu giá trị tùy ý; mỗi giá trị đã chọn đều được dùng. Danh mục để trống do Agent tự chọn.
+            Chọn bao nhiêu giá trị tùy ý; mỗi giá trị đã chọn đều được dùng. Xe ego bắt buộc; các danh mục khác để trống do Agent tự chọn.
           </span>
           {maps.length > 1 && (
             <button type="button" className="button" disabled={busy} onClick={() => onApplyAll(active)} title="Sao chép các lựa chọn sang các bản đồ khác (bỏ qua giá trị bản đồ đó không có)">
@@ -174,7 +177,7 @@ export function MapOptionTabs({
           <div className="inline-note"><span className="spinner" />Đang tải dữ liệu CARLA của {active}…</div>
         ) : (
           <div className="check-categories">
-            <CheckGroup title="Xe ego" help="Xe được kiểm thử." choices={mapChoices?.egos ?? []} values={current.ego_vehicle_codes} disabled={busy} onChange={(values) => set({ ego_vehicle_codes: values })} />
+            <CheckGroup title="Xe ego" help="Xe được kiểm thử, lấy từ dữ liệu CARLA đã đồng bộ của bản đồ." required choices={mapChoices?.egos ?? []} values={current.ego_vehicle_codes} disabled={busy} onChange={(values) => set({ ego_vehicle_codes: values })} />
             <CheckGroup title="Tác nhân" help="Đối tượng gây tình huống." choices={mapChoices?.adversaries ?? []} values={current.adversary_types} disabled={busy} onChange={(values) => set({ adversary_types: values })} />
             <CheckGroup title="Môi trường" help="Thời tiết và ánh sáng." choices={mapChoices?.environments ?? []} values={current.environment_codes} disabled={busy} onChange={(values) => set({ environment_codes: values })} />
             <CheckGroup

@@ -1,6 +1,7 @@
 """CARLA catalog input and verified cut-in site contracts.
 
-The catalog shape matches the Bridge's ``scenario-forge.catalog.v1`` payload.
+The catalog shape matches the Bridge's ``scenario-forge.catalog.v1`` payload. A ``catalog.v2`` document is
+accepted too: its extra facts (lane rules, junctions, signals...) are ignored here until the Agent uses them.
 Sampled waypoints alone do not prove lane adjacency, so ``CutInSite`` is a
 separate, verified result produced by a later site-finding step.
 """
@@ -67,7 +68,7 @@ class CatalogCutInSite(BaseModel):
 
 
 class CatalogV1(BaseModel):
-    format: Literal["scenario-forge.catalog.v1"] = "scenario-forge.catalog.v1"
+    format: Literal["scenario-forge.catalog.v1", "scenario-forge.catalog.v2"] = "scenario-forge.catalog.v1"
     carla_version: str = Field(min_length=1, max_length=64)
     map_name: str = Field(min_length=1, max_length=120)
     available_maps: list[str] = Field(default_factory=list)

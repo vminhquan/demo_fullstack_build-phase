@@ -59,14 +59,20 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
   const textRef = useRef<HTMLTextAreaElement>(null);
   const optionsOf = (map: string) => mapOptions[map] ?? emptyMapOptions();
   const current = maps.includes(activeMap) ? activeMap : maps[0] ?? "";
-  // A map is required: the Agent only places the scenario on the maps the user picked.
+  // Maps whose ego is not picked yet: the ego is fixed by the user, never chosen by the Agent.
+  const mapsWithoutEgo = maps.filter((map) => optionsOf(map).ego_vehicle_codes.length === 0);
+  // A map is required: the Agent only places the scenario on the maps the user picked. A missing ego stays sendable
+  // so submit() can say which map needs one and open its tab.
   const canSend = !busy && description.trim().length >= 3 && maps.length > 0;
 
   function toggleMap(map: string) {
     if (maps.includes(map)) { removeMap(map); return; }
     setError("");
     setMaps((available ?? []).filter((item) => item === map || maps.includes(item)));
-    setMapOptions((previous) => ({ ...previous, [map]: previous[map] ?? emptyMapOptions() }));
+    // Start a new map with the egos already picked on the other maps that its CARLA data also has (still editable).
+    const egos = choices[map]?.egos ?? [];
+    const carried = [...new Set(maps.flatMap((item) => optionsOf(item).ego_vehicle_codes))].filter((code) => egos.some((ego) => ego.value === code));
+    setMapOptions((previous) => ({ ...previous, [map]: previous[map] ?? { ...emptyMapOptions(), ego_vehicle_codes: carried } }));
     setActiveMap(map);
   }
   function removeMap(map: string) {
@@ -108,12 +114,19 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
     const text = description.trim();
     if (maps.length === 0) { setError("Chọn ít nhất một bản đồ để tạo test case."); return; }
     if (text.length < 3) { setError("Mô tả tình huống cần ít nhất 3 ký tự."); textRef.current?.focus(); return; }
+    if (mapsWithoutEgo.length) {
+      setError(`Chọn xe ego cho bản đồ: ${mapsWithoutEgo.join(", ")}.`);
+      setActiveMap(mapsWithoutEgo[0]);
+      setPanel("maps");
+      return;
+    }
     // An empty title is summarised by the Backend (Agent), like a chat app names a new conversation.
     onSubmit({
       title: title.trim() || null,
       description: text,
       catalog_source: source ?? "DEFAULT",
-      maps: maps.map((map) => ({ map_code: map, ...optionsOf(map) })),
+      // Pin the snapshot the choices came from, so generation uses the same CARLA data the user picked from.
+      maps: maps.map((map) => ({ map_code: map, catalog_snapshot_id: snapshotsByMap?.[map]?.[0] ?? null, ...optionsOf(map) })),
       tag_names: parseTags(tagsText),
     });
   }
@@ -162,8 +175,8 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
             {maps.length > 0 && <span className="chat-options-count">{maps.length}</span>}
             <Icon name="chevronDown" size={12} className="chat-options-caret" />
           </button>
-          <span className="chat-composer-meta">{maps.length ? `${maps.length} bản đồ` : "Chưa chọn bản đồ"}</span>
-          <button type="submit" className="chat-send" disabled={!canSend} title={maps.length ? "Tạo test case (Enter)" : "Chọn ít nhất một bản đồ để tạo test case"} aria-label="Tạo test case">
+          <span className="chat-composer-meta">{!maps.length ? "Chưa chọn bản đồ" : mapsWithoutEgo.length ? `${mapsWithoutEgo.length} bản đồ chưa chọn xe ego` : `${maps.length} bản đồ`}</span>
+          <button type="submit" className="chat-send" disabled={!canSend} title={!maps.length ? "Chọn ít nhất một bản đồ để tạo test case" : mapsWithoutEgo.length ? `Chọn xe ego cho: ${mapsWithoutEgo.join(", ")}` : "Tạo test case (Enter)"} aria-label="Tạo test case">
             {busy ? <span className="spinner" /> : <Icon name="arrowUp" size={16} />}
           </button>
         </div>

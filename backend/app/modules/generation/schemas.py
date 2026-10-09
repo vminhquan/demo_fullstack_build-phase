@@ -27,7 +27,8 @@ class GenerationCreate(BaseModel):
 
 
 class GenerationMetadata(BaseModel):
-    """The map is required; each other value is optional and, when left out, chosen by the Agent."""
+    """The map is required; the ego is required by create_generation (the Agent never picks it); the other values
+    are optional and, when left out, chosen by the Agent."""
 
     map_code: str = Field(min_length=1, max_length=120)
     ego_vehicle_code: str | None = Field(default=None, min_length=1, max_length=255)

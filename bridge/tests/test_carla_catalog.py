@@ -20,6 +20,7 @@ def fake_carla(monkeypatch):
     import carla
 
     carla.LOADS.clear()
+    carla.DESTROYED.clear()
     carla.DEAD["value"] = False
     carla.MAPS[:] = ["/Game/Carla/Maps/AnnotationColorLandscape", "/Game/Carla/Maps/Town01", "/Game/Carla/Maps/Town01_Opt",
                      "/Game/Carla/Maps/Town03", "/Game/Carla/Maps/Town10HD_Opt"]
@@ -41,7 +42,7 @@ def test_skips_utility_maps_and_loads_each_road_network_once(fake_carla) -> None
 
 def test_catalog_shape(fake_carla) -> None:
     town03 = next(item for item in carla_catalog.collect("127.0.0.1", 2000) if item.map_name == "Town03").catalog
-    assert town03["format"] == "scenario-forge.catalog.v1" and town03["map_name"] == "Town03"
+    assert town03["format"] == "scenario-forge.catalog.v2" and town03["map_name"] == "Town03"
     assert "AnnotationColorLandscape" in town03["available_maps"]
     assert len(town03["waypoints"]) == 300 and town03["spawn_points"]
     assert town03["cut_in_sites"] == []  # Fake CARLA exposes no neighboring-lane topology.
@@ -49,6 +50,44 @@ def test_catalog_shape(fake_carla) -> None:
     wheels = {item["id"]: item["number_of_wheels"] for item in town03["vehicles"]}
     assert wheels == {"vehicle.tesla.model3": 4, "vehicle.yamaha.yzf": 2}
     assert town03["weather_presets"] == ["ClearNoon", "WetNight"]
+
+
+def test_catalog_v2_facts(fake_carla) -> None:
+    town03 = next(item for item in carla_catalog.collect("127.0.0.1", 2000) if item.map_name == "Town03").catalog
+    assert town03["extraction_errors"] == []
+    assert town03["opendrive_xml"].startswith("<OpenDRIVE") and len(town03["opendrive_hash"]) == 64
+    waypoint = town03["waypoints"][0]
+    assert waypoint["junction_id"] == 900 and waypoint["lane_change"] == "Left"
+    assert waypoint["left_marking"] == {"type": "Broken", "color": "White", "lane_change": "Both"}
+    assert waypoint["left_lane"] is None and waypoint["right_lane"] is None  # get_right_lane raised: no neighbor
+    assert town03["waypoints"][1]["junction_id"] is None
+    # 40 mph -> km/h; "no limit" is not a number and is skipped.
+    assert town03["road_speeds"] == [{"road_id": 1, "from_s": 0.0, "max_kmh": 64.4}]
+    junction = next(item for item in town03["junctions"] if item["junction_id"] == 900)
+    assert junction["incoming_road_ids"] == [1] and junction["four_way_candidate"] is False
+    assert junction["connections"][0]["lane_links"] == [{"from_lane": -1, "to_lane": -1}]
+    assert junction["lane_paths"][0]["entry"]["road_id"] == 1 and junction["extent"]["x"] == 2.0
+    [landmark] = town03["landmarks"]
+    assert landmark["type"] == "1000001" and landmark["affected_lanes"] == [[-1, -1]] and landmark["yaw"] == 90.0
+    [light] = town03["traffic_lights"]
+    assert light["opendrive_id"] == "963" and light["group_actor_ids"] == [42] and light["red_s"] == 2.0
+    assert len(light["stop_waypoints"]) == 1 and len(light["affected_lanes"]) == 1
+    [crosswalk] = town03["crosswalks"]
+    assert len(crosswalk["polygon"]) == 4 and crosswalk["center"] == {"x": 2.0, "y": 1.5, "z": 0.0}
+    assert town03["topology"][0]["end"]["road_id"] == 2
+    tesla = next(item for item in town03["vehicles"] if item["id"] == "vehicle.tesla.model3")
+    assert (tesla["length_m"], tesla["width_m"], tesla["height_m"]) == (4.0, 2.0, 1.6)
+    assert set(fake_carla.DESTROYED) == {"vehicle.tesla.model3", "vehicle.yamaha.yzf"}  # every probe actor removed
+    assert town03["weather_parameters"]["ClearNoon"] == {"cloudiness": 10.0, "precipitation": 0.0, "sun_altitude_angle": 45.0}
+    assert all(-180 <= item["yaw"] < 180 for item in town03["spawn_points"])
+
+
+def test_unsupported_api_is_reported_not_fatal(fake_carla, monkeypatch) -> None:
+    monkeypatch.delattr(fake_carla.Map, "get_crosswalks")
+    town03 = next(item for item in carla_catalog.collect("127.0.0.1", 2000) if item.map_name == "Town03").catalog
+    assert town03["crosswalks"] is None
+    assert [item["part"] for item in town03["extraction_errors"]] == ["crosswalks"]
+    assert town03["landmarks"]
 
 
 def test_load_opt_reads_every_build(fake_carla) -> None:

@@ -1,8 +1,9 @@
-"""Reads the user's CARLA through the `carla` Python API and builds one catalog.v1 document per map.
+"""Reads the user's CARLA through the `carla` Python API and builds one catalog.v2 document per map.
 
-Same shape as backend/app/modules/catalog/contract.py (CatalogV1). Blueprints and weather presets are global;
-spawn points, lane waypoints and the OpenDRIVE hash need the map loaded, so every map is loaded in turn and the
-map the user had open is restored at the end.
+Same shape as backend/app/modules/catalog/contract.py. Blueprints, vehicle sizes and weather presets are global;
+spawn points, lane waypoints, the OpenDRIVE and the map facts (map_facts.py) need the map loaded, so every map is
+loaded in turn and the map the user had open is restored at the end. Parts an older CARLA cannot provide are
+listed in `extraction_errors` and left out.
 """
 from __future__ import annotations
 
@@ -14,12 +15,14 @@ from dataclasses import dataclass
 from typing import Any
 
 if __package__:
+    from . import map_facts
     from .cut_in_sites import extract_cut_in_sites
 else:
     # runtime.collect executes this file directly with ScenarioRunner's Python.
+    import map_facts
     from cut_in_sites import extract_cut_in_sites
 
-CATALOG_FORMAT = "scenario-forge.catalog.v1"
+CATALOG_FORMAT = "scenario-forge.catalog.v2"
 WAYPOINT_SPACING_M = 2.0
 RPC_TIMEOUT_S = 30.0
 # Large maps (Town12/13, Town15) can take minutes to load.
@@ -59,7 +62,7 @@ def _r(value: float, digits: int = 2) -> float:
 
 def _pose(transform: Any) -> dict[str, float]:
     location, rotation = transform.location, transform.rotation
-    return {"x": _r(location.x), "y": _r(location.y), "z": _r(location.z), "yaw": _r(rotation.yaw)}
+    return {"x": _r(location.x), "y": _r(location.y), "z": _r(location.z), "yaw": map_facts.norm_yaw(rotation.yaw)}
 
 
 def _waypoint(waypoint: Any) -> dict[str, Any]:
@@ -130,24 +133,43 @@ def weather_presets(carla: Any) -> list[str]:
 
 
 def map_catalog(
-    world: Any, *, carla_version: str, available_maps: list[str], vehicles: list, walkers: list, presets: list[str], spacing: float
+    world: Any, *, carla_version: str, available_maps: list[str], vehicles: list, walkers: list, presets: list[str], spacing: float,
+    carla: Any = None, weather: dict | None = None, errors: list | None = None,
 ) -> dict[str, Any]:
+    """`errors` holds what the map-independent readers already reported; this map's failures are added to a copy."""
+    errors = list(errors or [])
     carla_map = world.get_map()
     opendrive = carla_map.to_opendrive()
     waypoints = carla_map.generate_waypoints(spacing)
-    return {
+    rules = map_facts.guarded(errors, "lane_rules", lambda: [map_facts.lane_rules(item) for item in waypoints])
+    speeds = map_facts.guarded(errors, "road_speeds", lambda: map_facts.road_speeds(opendrive), []) if opendrive else []
+    sites = extract_cut_in_sites(waypoints)
+    for site in sites:
+        site["speed_limit_kmh"] = map_facts.speed_at(speeds, site["ego_lane"]["road_id"], site["ego_s"])
+    catalog = {
         "format": CATALOG_FORMAT,
         "carla_version": carla_version,
         "map_name": short_map_name(carla_map.name),
         "available_maps": available_maps,
         "opendrive_hash": hashlib.sha256(opendrive.encode("utf-8")).hexdigest() if opendrive else None,
+        # The Backend stores the OpenDRIVE apart from the JSON document (it is not sent to the Agent).
+        "opendrive_xml": opendrive or None,
         "vehicles": vehicles,
         "walkers": walkers,
         "spawn_points": [_pose(item) for item in carla_map.get_spawn_points()],
-        "waypoints": [_waypoint(item) for item in waypoints],
+        "waypoints": [{**_waypoint(item), **(rules[index] if rules else {})} for index, item in enumerate(waypoints)],
         "weather_presets": presets,
-        "cut_in_sites": extract_cut_in_sites(waypoints),
+        "weather_parameters": weather,
+        "cut_in_sites": sites,
+        "road_speeds": speeds,
+        "junctions": map_facts.guarded(errors, "junctions", lambda: map_facts.junctions(carla, waypoints, opendrive)),
+        "landmarks": map_facts.guarded(errors, "landmarks", lambda: map_facts.landmarks(carla_map)),
+        "traffic_lights": map_facts.guarded(errors, "traffic_lights", lambda: map_facts.traffic_lights(world)),
+        "crosswalks": map_facts.guarded(errors, "crosswalks", lambda: map_facts.crosswalks(carla, carla_map)),
+        "topology": map_facts.guarded(errors, "topology", lambda: map_facts.topology(carla_map)),
     }
+    catalog["extraction_errors"] = errors
+    return catalog
 
 
 # Utility levels CARLA ships next to the towns: no OpenDRIVE road network, loading them fails ("failed to generate map").
@@ -225,9 +247,14 @@ def collect(
     targets = [name for name in available if (name in wanted if wanted is not None else is_road_map(name))]
     groups = plan_loads(targets, original, load_opt=load_opt)
     total = len(targets)
-    # Blueprint library and weather presets do not depend on the map.
+    # Blueprint library, vehicle sizes and weather presets do not depend on the map.
     vehicles, walkers = blueprints(world)
     presets = weather_presets(carla)
+    global_errors: list[dict[str, str]] = []
+    sizes = map_facts.guarded(global_errors, "vehicle_sizes", lambda: map_facts.vehicle_sizes(world), {})
+    for vehicle in vehicles:
+        vehicle.update(sizes.get(vehicle["id"], {}))
+    weather = map_facts.guarded(global_errors, "weather_parameters", lambda: map_facts.weather_parameters(carla, presets))
     current = original
     index = 0
     alive = True
@@ -243,7 +270,8 @@ def collect(
                     current = name
                 client.set_timeout(RPC_TIMEOUT_S)
                 catalog = map_catalog(world, carla_version=carla_version, available_maps=available, vehicles=vehicles,
-                                      walkers=walkers, presets=presets, spacing=spacing)
+                                      walkers=walkers, presets=presets, spacing=spacing, carla=carla, weather=weather,
+                                      errors=global_errors)
             except Exception as exc:  # noqa: BLE001 - report per map, keep going
                 message = str(exc) or exc.__class__.__name__
                 if "failed to generate map" in message:
@@ -292,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
     import json
     from dataclasses import asdict
 
-    parser = argparse.ArgumentParser(description="Read CARLA maps into scenario-forge.catalog.v1 documents")
+    parser = argparse.ArgumentParser(description="Read CARLA maps into scenario-forge.catalog.v2 documents")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=2000)
     parser.add_argument("--maps", default="")

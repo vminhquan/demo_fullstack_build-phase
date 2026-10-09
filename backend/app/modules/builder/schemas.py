@@ -10,9 +10,12 @@ from app.shared.infrastructure.models import BuilderSessionStatus, DangerLevel
 
 
 class BuilderMapOptions(BaseModel):
-    """One picked map and the values the user ticked for it; an empty list leaves that category to the Agent."""
+    """One picked map and the values the user ticked for it. A new session needs an ego (BuilderSessionCreate);
+    any other empty list leaves that category to the Agent."""
 
     map_code: str = Field(min_length=1, max_length=120)
+    # The CARLA data the screen listed the choices from, so generation uses that exact data (None on older sessions).
+    catalog_snapshot_id: int | None = None
     ego_vehicle_codes: list[str] = Field(default_factory=list, max_length=50)
     adversary_types: list[str] = Field(default_factory=list, max_length=50)
     environment_codes: list[str] = Field(default_factory=list, max_length=50)
@@ -32,6 +35,10 @@ class BuilderSessionCreate(BaseModel):
         codes = [item.map_code for item in maps]
         if len(set(codes)) != len(codes):
             raise ValueError("Each map can be picked only once")
+        # Ego is fixed by the user, never sampled by the Agent (BuilderMapOptions stays optional for older sessions).
+        without_ego = [item.map_code for item in maps if not item.ego_vehicle_codes]
+        if without_ego:
+            raise ValueError(f"Pick at least one ego vehicle for: {', '.join(without_ego)}")
         return maps
 
 

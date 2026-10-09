@@ -4,6 +4,10 @@ The exported site is a lower bound on continuously verified road length. We
 only accept a source lane whose left/right neighbor is a same-direction
 Driving lane throughout the corridor. This intentionally rejects ambiguous
 branches and older waypoint-only catalogs rather than guessing topology.
+
+A site needs MIN_CORRIDOR_M; its location tags describe those first metres (as
+before catalog.v2), while available_length_m and the corridor facts follow the
+verified pair up to MAX_CORRIDOR_M ahead and MAX_UPSTREAM_M behind the anchor.
 """
 
 from __future__ import annotations
@@ -15,6 +19,10 @@ from typing import Any
 SITE_SPACING_M = 20.0
 CHECK_STEP_M = 5.0
 MIN_CORRIDOR_M = 60.0
+MAX_CORRIDOR_M = 300.0
+MAX_UPSTREAM_M = 100.0
+# Steps are 0.5..7.5 m: enough iterations to cover MAX_CORRIDOR_M even with short steps.
+MAX_STEPS = 2 * math.ceil(MAX_CORRIDOR_M / CHECK_STEP_M) + 3
 MAX_HEADING_DIFFERENCE_DEG = 20.0
 CURVE_HEADING_CHANGE_DEG = 15.0
 
@@ -89,7 +97,49 @@ def _successor(waypoint: Any) -> Any | None:
     return next_waypoints[0] if len(next_waypoints) == 1 else None
 
 
-def _verified_corridor(source: Any, target: Any, side: str) -> tuple[float, list[str], int] | None:
+def _predecessor(waypoint: Any) -> Any | None:
+    try:
+        previous_waypoints = waypoint.previous(CHECK_STEP_M)
+    except (AttributeError, RuntimeError):
+        return None
+    return previous_waypoints[0] if len(previous_waypoints) == 1 else None
+
+
+def _crossing_allowed(source: Any, side: str) -> bool | None:
+    """Whether the source lane's own rule lets a vehicle move to `side`; None when the CARLA build lacks lane_change."""
+    rule = getattr(source, "lane_change", None)
+    if rule is None:
+        return None
+    name = str(rule).rsplit(".", 1)[-1]
+    return name == "Both" or name.lower() == side
+
+
+def _marking_type(source: Any, side: str) -> str | None:
+    marking = getattr(source, side + "_lane_marking", None)
+    return None if marking is None else str(marking.type).rsplit(".", 1)[-1]
+
+
+def _step_ok(current_source: Any, current_target: Any, next_source: Any, next_target: Any) -> tuple[bool, int]:
+    """Both lanes advance by a similar, plausible distance with OpenDRIVE s moving the same way: (ok, s direction)."""
+    source_step, target_step = _distance(current_source, next_source), _distance(current_target, next_target)
+    if (
+        source_step < 0.5 or target_step < 0.5
+        or source_step > CHECK_STEP_M * 1.5 or target_step > CHECK_STEP_M * 1.5
+        or abs(source_step - target_step) > CHECK_STEP_M / 2
+    ):
+        return False, 0
+    source_s_step = float(next_source.s) - float(current_source.s)
+    target_s_step = float(next_target.s) - float(current_target.s)
+    if (abs(source_s_step) < 0.5 or abs(target_s_step) < 0.5
+            or abs(source_s_step) > CHECK_STEP_M * 1.5
+            or abs(target_s_step) > CHECK_STEP_M * 1.5
+            or source_s_step * target_s_step <= 0):
+        return False, 0
+    return True, 1 if source_s_step > 0 else -1
+
+
+def _verified_corridor(source: Any, target: Any, side: str) -> dict[str, Any] | None:
+    """Walk the lane pair forward. None when it is not verified for MIN_CORRIDOR_M; otherwise its facts."""
     start = source
     start_source_ref, start_target_ref = _lane_ref(source), _lane_ref(target)
     current_source, current_target = source, target
@@ -97,14 +147,29 @@ def _verified_corridor(source: Any, target: Any, side: str) -> tuple[float, list
     s_direction: int | None = None
     through_junction = False
     max_turn = 0.0
-    for _ in range(math.ceil(MIN_CORRIDOR_M / CHECK_STEP_M) + 3):
+    tags: list[str] | None = None
+    first_junction_m: float | None = None
+    allowed: bool | None = True
+    markings: set[str] = set()
+    ends_at = "step_limit"
+    for _ in range(MAX_STEPS):
         if not _pair_valid(current_source, current_target, side):
-            return None
+            ends_at = "lane_pair_ends"
+            break
         if _lane_ref(current_source) != start_source_ref or _lane_ref(current_target) != start_target_ref:
-            return None
-        through_junction |= bool(current_source.is_junction or current_target.is_junction)
+            ends_at = "lane_pair_ends"
+            break
+        if current_source.is_junction or current_target.is_junction:
+            through_junction = True
+            if first_junction_m is None:
+                first_junction_m = round(length, 2)
         max_turn = max(max_turn, _heading_difference(start, current_source))
-        if length >= MIN_CORRIDOR_M:
+        rule = _crossing_allowed(current_source, side)
+        allowed = None if rule is None or allowed is None else allowed and rule
+        marking = _marking_type(current_source, side)
+        if marking:
+            markings.add(marking)
+        if tags is None and length >= MIN_CORRIDOR_M:
             if s_direction is None:
                 return None
             tags = ["curve" if max_turn >= CURVE_HEADING_CHANGE_DEG else "straight"]
@@ -112,31 +177,46 @@ def _verified_corridor(source: Any, target: Any, side: str) -> tuple[float, list
                 tags.append("junction")
             elif through_junction:
                 tags.append("junction_approach")
-            return round(length, 2), tags, s_direction
+        if length >= MAX_CORRIDOR_M:
+            ends_at = "max_length"
+            break
         next_source, next_target = _successor(current_source), _successor(current_target)
         if next_source is None or next_target is None:
-            return None
-        source_step, target_step = _distance(current_source, next_source), _distance(current_target, next_target)
-        if (
-            source_step < 0.5 or target_step < 0.5
-            or source_step > CHECK_STEP_M * 1.5 or target_step > CHECK_STEP_M * 1.5
-            or abs(source_step - target_step) > CHECK_STEP_M / 2
-        ):
-            return None
-        source_s_step = float(next_source.s) - float(current_source.s)
-        target_s_step = float(next_target.s) - float(current_target.s)
-        if (abs(source_s_step) < 0.5 or abs(target_s_step) < 0.5
-                or abs(source_s_step) > CHECK_STEP_M * 1.5
-                or abs(target_s_step) > CHECK_STEP_M * 1.5
-                or source_s_step * target_s_step <= 0):
-            return None
-        step_direction = 1 if source_s_step > 0 else -1
-        if s_direction is not None and step_direction != s_direction:
-            return None
+            ends_at = "branch_or_end"
+            break
+        ok, step_direction = _step_ok(current_source, current_target, next_source, next_target)
+        if not ok or (s_direction is not None and step_direction != s_direction):
+            ends_at = "discontinuity"
+            break
         s_direction = step_direction
-        length += min(source_step, target_step)
+        length += min(_distance(current_source, next_source), _distance(current_target, next_target))
         current_source, current_target = next_source, next_target
-    return None
+    if tags is None or s_direction is None:
+        return None
+    return {
+        "length": round(length, 2), "tags": tags, "s_direction": s_direction, "ends_at": ends_at,
+        "max_turn": round(max_turn, 1), "first_junction_m": first_junction_m,
+        "lane_change_allowed": allowed, "markings": sorted(markings),
+    }
+
+
+def _upstream_length(source: Any, target: Any, side: str, s_direction: int) -> float:
+    """Verified length of the same lane pair behind the anchor (for a motorcycle starting behind the ego)."""
+    start_refs = (_lane_ref(source), _lane_ref(target))
+    current_source, current_target = source, target
+    length = 0.0
+    while length < MAX_UPSTREAM_M:
+        previous_source, previous_target = _predecessor(current_source), _predecessor(current_target)
+        if previous_source is None or previous_target is None or not _pair_valid(previous_source, previous_target, side):
+            break
+        if (_lane_ref(previous_source), _lane_ref(previous_target)) != start_refs:
+            break
+        ok, step_direction = _step_ok(previous_source, previous_target, current_source, current_target)
+        if not ok or step_direction != s_direction:
+            break
+        length += min(_distance(previous_source, current_source), _distance(previous_target, current_target))
+        current_source, current_target = previous_source, previous_target
+    return round(min(length, MAX_UPSTREAM_M), 2)
 
 
 def extract_cut_in_sites(waypoints: Iterable[Any]) -> list[dict[str, Any]]:
@@ -164,7 +244,6 @@ def extract_cut_in_sites(waypoints: Iterable[Any]) -> list[dict[str, Any]]:
             verified = _verified_corridor(source, target, side)
             if verified is None:
                 continue
-            length, tags, s_direction = verified
             accepted.add(pair)
             site_id = ":".join(str(part) for part in (*pair[:4], round(float(source.s), 1)))
             sites.append({
@@ -173,12 +252,19 @@ def extract_cut_in_sites(waypoints: Iterable[Any]) -> list[dict[str, Any]]:
                 "motorcycle_lane": _lane_ref(source),
                 "ego_anchor": _pose(target),
                 "motorcycle_anchor": _pose(source),
-                "available_length_m": length,
-                "location_tags": tags,
+                "available_length_m": verified["length"],
+                "location_tags": verified["tags"],
                 "verification_source": "carla_topology",
                 "ego_s": round(float(target.s), 3),
                 "motorcycle_s": round(float(source.s), 3),
-                "s_direction": s_direction,
+                "s_direction": verified["s_direction"],
                 "target_side": side,
+                "upstream_length_m": _upstream_length(source, target, side, verified["s_direction"]),
+                "lane_change_allowed_throughout": verified["lane_change_allowed"],
+                "marking_between": verified["markings"],
+                "max_heading_change_deg": verified["max_turn"],
+                "first_junction_m": verified["first_junction_m"],
+                "ends_at": verified["ends_at"],
+                "lane_width_m": {"ego": round(float(target.lane_width), 2), "motorcycle": round(float(source.lane_width), 2)},
             })
     return sorted(sites, key=lambda item: item["site_id"])

@@ -58,3 +58,14 @@ def test_length_filter_and_unconstrained_location() -> None:
     result = find_cut_in_sites([selected])
     assert [item.site_id for item in result.sites] == ["long"]
     assert find_cut_in_sites([selected], ["curve"]).map_failures[0].code == "INSUFFICIENT_SITE_LENGTH"
+
+
+def test_catalog_v2_document_is_accepted_and_its_extra_facts_ignored() -> None:
+    v2_site = {**site("a", ["straight"], 184.5), "upstream_length_m": 40.0, "lane_change_allowed_throughout": True,
+               "marking_between": ["Broken"], "speed_limit_kmh": 64.4}
+    base = snapshot("Town10HD", 3, [v2_site]).model_dump(mode="json")
+    catalog = {**base["catalog"], "format": "scenario-forge.catalog.v2", "cut_in_sites": [v2_site],
+               "road_speeds": [{"road_id": 1, "from_s": 0.0, "max_kmh": 64.4}], "junctions": [], "extraction_errors": []}
+    selected = SelectedSnapshot.model_validate({**base, "catalog": catalog})
+    [found] = find_cut_in_sites([selected]).sites
+    assert selected.catalog.format == "scenario-forge.catalog.v2" and found.available_length_m == 184.5

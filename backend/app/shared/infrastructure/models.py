@@ -404,7 +404,7 @@ class TestCaseDecision(IdTimestampMixin, Base):
 
 
 class CarlaCatalogSnapshot(IdTimestampMixin, Base):
-    """One catalog.v1 document: maps, blueprints, spawn points and lane waypoints of a CARLA world."""
+    """One catalog.v1/v2 document: maps, blueprints, spawn points, lane waypoints and map facts of a CARLA world."""
 
     __tablename__ = "carla_catalog_snapshots"
     __table_args__ = (
@@ -424,8 +424,10 @@ class CarlaCatalogSnapshot(IdTimestampMixin, Base):
     waypoint_count: Mapped[int] = mapped_column(Integer)
     vehicle_count: Mapped[int] = mapped_column(Integer)
     walker_count: Mapped[int] = mapped_column(Integer)
-    # Full catalog.v1 JSON (hundreds of KB); deferred so listings stay light.
+    # Full catalog JSON (hundreds of KB to a few MB); deferred so listings stay light.
     catalog: Mapped[dict[str, Any]] = mapped_column(JSONB, deferred=True)
+    # OpenDRIVE of the map (catalog.v2, ~1-5 MB), kept out of the JSON so the Agent payload does not carry it.
+    opendrive_xml: Mapped[str | None] = mapped_column(Text, deferred=True)
     label: Mapped[str | None] = mapped_column(String(200))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     # What the map can host (road types, lanes...), computed once by the Agent from the lane data.

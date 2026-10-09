@@ -54,9 +54,10 @@ export type TestCaseDecision = {
   config_sha256: string; decided_by: number; decided_by_name: string | null; created_at: string; undone_at: string | null;
 };
 export type BatchItemResult = { id: number; status: TestCaseStatus | null; error: string | null; message: string | null };
-/** One picked map and the values ticked for it; an empty list leaves that category to the Agent. */
+/** One picked map and the values ticked for it. The ego is required; any other empty list leaves that category to the
+ * Agent. `catalog_snapshot_id` is the CARLA data the choices were listed from (null on older sessions). */
 export type BuilderMapOptions = {
-  map_code: string; ego_vehicle_codes: string[]; adversary_types: string[]; environment_codes: string[]; danger_levels: DangerLevel[];
+  map_code: string; catalog_snapshot_id?: number | null; ego_vehicle_codes: string[]; adversary_types: string[]; environment_codes: string[]; danger_levels: DangerLevel[];
 };
 export type BuilderSessionCreate = {
   title: string | null; description: string; catalog_source: "DEFAULT" | "PROJECT"; maps: BuilderMapOptions[]; tag_names: string[];

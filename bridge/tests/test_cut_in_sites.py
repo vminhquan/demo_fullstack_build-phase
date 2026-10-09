@@ -79,3 +79,57 @@ def test_rejects_opendrive_s_reversal_inside_corridor() -> None:
         source.s -= 10
         target.s -= 10
     assert extract_cut_in_sites([sources[0]]) == []
+
+
+class RuledWaypoint(Waypoint):
+    """Waypoint with the catalog.v2 attributes: lane rule, markings and predecessors."""
+
+    def __init__(self, x: float, y: float, lane_id: int, *, rule: str = "LaneChange.Left"):
+        super().__init__(x, y, lane_id)
+        self.lane_change = rule
+        self.left_lane_marking = SimpleNamespace(type="LaneMarkingType.Broken")
+        self.predecessors = []
+
+    def previous(self, distance):
+        assert distance == 5.0
+        return self.predecessors
+
+
+def long_corridor(steps: int, *, anchor: int, curve_from: int | None = None, solid_at: int | None = None):
+    sources = [RuledWaypoint(i * 5.0, 0.0, -1) for i in range(steps)]
+    targets = [RuledWaypoint(i * 5.0, 3.5, -2) for i in range(steps)]
+    for i, (source, target) in enumerate(zip(sources, targets, strict=True)):
+        source.left = target
+        if i + 1 < steps:
+            source.successors, target.successors = [sources[i + 1]], [targets[i + 1]]
+        if i > 0:
+            source.predecessors, target.predecessors = [sources[i - 1]], [targets[i - 1]]
+        if curve_from is not None and i >= curve_from:
+            source.transform.rotation.yaw = target.transform.rotation.yaw = 30.0
+    if solid_at is not None:
+        sources[solid_at].lane_change = "LaneChange.NONE"
+        sources[solid_at].left_lane_marking = SimpleNamespace(type="LaneMarkingType.Solid")
+    return sources[anchor]
+
+
+def test_corridor_reports_full_length_upstream_and_rules() -> None:
+    [site] = extract_cut_in_sites([long_corridor(90, anchor=10, curve_from=40)])
+    assert site["available_length_m"] == 300.0 and site["ends_at"] == "max_length"
+    assert site["upstream_length_m"] == 50.0  # 10 verified steps behind the anchor
+    # Tags keep describing the first 60 m (straight there), the turn further on is in max_heading_change_deg.
+    assert site["location_tags"] == ["straight"] and site["max_heading_change_deg"] == 30.0
+    assert site["lane_change_allowed_throughout"] is True and site["marking_between"] == ["Broken"]
+    assert site["lane_width_m"] == {"ego": 3.5, "motorcycle": 3.5} and site["first_junction_m"] is None
+
+
+def test_corridor_end_and_lane_rule_on_the_way() -> None:
+    [site] = extract_cut_in_sites([long_corridor(20, anchor=0, solid_at=15)])
+    assert site["available_length_m"] == 95.0 and site["ends_at"] == "branch_or_end"
+    assert site["upstream_length_m"] == 0.0
+    assert site["lane_change_allowed_throughout"] is False and site["marking_between"] == ["Broken", "Solid"]
+
+
+def test_lane_rule_unknown_on_older_carla() -> None:
+    sources, _ = corridor()
+    [site] = extract_cut_in_sites([sources[0]])
+    assert site["lane_change_allowed_throughout"] is None and site["marking_between"] == []
