@@ -35,17 +35,18 @@ services:
       # Frontend origin, e.g. https://scenario-forge-web.onrender.com (set after the first deploy).
       - key: CORS_ORIGINS
         sync: false
-      # Agent2 public URL, e.g. https://scenario-forge-agent2.onrender.com (set after the first deploy).
+      # Existing Agent service URL, e.g. https://scenario-forge-agent.onrender.com.
       - key: AGENT_SERVICE_URL
         sync: false
       - key: AGENT_API_KEY
         fromService:
           type: web
-          name: scenario-forge-agent2
+          name: scenario-forge-agent
           envVarKey: AGENT_API_KEY
 
   - type: web
-    name: scenario-forge-agent2
+    # Keep the existing Render service name so Blueprint sync updates it in place.
+    name: scenario-forge-agent
     runtime: docker
     dockerContext: ./agent2
     dockerfilePath: ./agent2/Dockerfile
