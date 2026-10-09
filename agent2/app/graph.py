@@ -86,8 +86,9 @@ def extract_constraints(state: GraphState, runtime: Runtime[GraphContext]) -> di
             MapFailure(snapshot=item.ref, code=exc.code, message=str(exc))
             for item in runtime.context["selected_snapshots"]
         ]}
-    if constraints.ambiguities:
-        return {"status": "needs_clarification", "clarification_questions": constraints.ambiguities}
+    # Missing or unclear details never stop a run: whatever the prompt leaves open is sampled across the
+    # supported range. The notes travel with the result so the user can see what was assumed.
+    notes = {"clarification_questions": constraints.ambiguities} if constraints.ambiguities else {}
     if constraints.unsupported_requirements:
         return {"status": "failed", "map_failures": [
             MapFailure(snapshot=item.ref, code="UNSUPPORTED_REQUIREMENT",
@@ -104,7 +105,7 @@ def extract_constraints(state: GraphState, runtime: Runtime[GraphContext]) -> di
                 for item in runtime.context["selected_snapshots"]
             ]}
         constraints.lighting = request.lighting
-    return {"constraints": constraints}
+    return {"constraints": constraints, **notes}
 
 
 def after_extract(state: GraphState) -> str:

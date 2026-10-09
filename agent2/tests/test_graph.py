@@ -88,20 +88,13 @@ def test_graph_covers_selected_maps_and_keeps_catalog_out_of_state() -> None:
     assert "selected_snapshots" not in state and "catalog" not in state
 
 
-def test_graph_clarification_ends_before_site_search() -> None:
+def test_unclear_prompt_still_generates_and_keeps_the_note() -> None:
     class AmbiguousLLM(FakeLLM):
         def extract_constraints(self, prompt, *, tools=None, map_names=None):
             return PromptConstraints(ambiguities=["Tốc độ này thuộc xe nào?"])
 
-        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
-            raise AssertionError("Maneuver must not be proposed when the prompt is ambiguous")
-
-    body = request()
-    context = {"request": body, "selected_snapshots": body.selected_snapshots, "llm": AmbiguousLLM()}
-    updates = list(GENERATION_GRAPH.stream(initial_state(body, 17), context=context, stream_mode="updates"))
-    assert [next(iter(update)) for update in updates] == ["extract_constraints", "finish"]
-    result = generate(body, AmbiguousLLM())
-    assert result.status == "needs_clarification"
+    result = generate(request(), AmbiguousLLM())
+    assert result.status == "completed" and len(result.scenarios) == 1
     assert result.clarification_questions == ["Tốc độ này thuộc xe nào?"]
 
 

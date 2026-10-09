@@ -78,11 +78,6 @@ def fallback_title(description: str) -> str:
     return (title[:1].upper() + title[1:])[:80] or "Kịch bản mới"
 
 
-def variant_prompt(description: str, no: int, total: int) -> str:
-    # Ask each variant for different numbers; the seed also moves the ego start on the map.
-    return f"{description}\nBiến thể {no}/{total}: chọn tốc độ, khoảng cách và thời điểm kích hoạt khác các biến thể còn lại."
-
-
 def case_title(builder: BuilderSession, variant: Variant) -> str:
     suffix = f" (#{variant.no})" + (f" · {variant.map_code}" if len(builder.maps) > 1 else "")
     return f"{builder.title[: 300 - len(suffix)]}{suffix}"
@@ -170,8 +165,9 @@ async def run_variant(builder_id: int, builder: BuilderSession, actor: Principal
         try:
             generation = await create_generation(
                 GenerationCreate(
-                    prompt=variant_prompt(builder.prompt, variant.no, builder.target_count),
+                    prompt=builder.prompt,
                     catalog_source=builder.catalog_source,
+                    # Variants differ through the seed: agent2 samples site, speeds and weather from it.
                     seed=variant.no,
                     catalog_snapshot_id=variant.catalog_snapshot_id,
                     # The map pins the CARLA data; each ticked value constrains the Agent, the rest is its choice.

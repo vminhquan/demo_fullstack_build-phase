@@ -129,3 +129,18 @@ def test_sampled_variant_rejects_context_from_another_site() -> None:
     sampled = variant()
     with pytest.raises(ValueError, match="site_id does not match"):
         SampledVariant(site=sampled.site, context=sampled.context.model_copy(update={"site_id": "other-site"}))
+
+
+def test_only_quoted_requirements_block_and_missing_details_do_not() -> None:
+    reply = {
+        "location_tags": [], "weather_conditions": [], "lighting": None, "road_surface": None,
+        "ego_speed_kmh": None, "motorcycle_speed_kmh": None, "ambiguities": [],
+        "unsupported_requirements": [
+            {"quote": "trời  có TUYẾT", "reason": "tuyết ngoài miền hỗ trợ"},
+            {"quote": "", "reason": "Không có thông tin về tốc độ"},
+            {"quote": "tốc độ và thời tiết", "reason": "Thiếu tốc độ và thời tiết"},
+        ],
+    }
+    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
+    constraints = llm.extract_constraints("Xe máy tạt đầu ô tô khi trời có tuyết")
+    assert constraints.unsupported_requirements == ['"trời  có TUYẾT": tuyết ngoài miền hỗ trợ']

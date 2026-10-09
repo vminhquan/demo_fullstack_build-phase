@@ -95,13 +95,19 @@ def test_missing_motorcycle_is_reported_without_using_bicycle() -> None:
     (PromptConstraints(road_surface="dry", weather_conditions=["rain"]), "ENVIRONMENT_CONFLICT"),
     (PromptConstraints(ego_speed_kmh=0), "UNSUPPORTED_SPEED"),
     (PromptConstraints(unsupported_requirements=["snow"], weather_conditions=[]), "UNSUPPORTED_REQUIREMENT"),
-    (PromptConstraints(ambiguities=["tốc độ không rõ đơn vị"]), "AMBIGUOUS_PROMPT"),
 ])
 def test_unsupported_or_conflicting_constraints_fail_explicitly(constraints: PromptConstraints, code: str) -> None:
     selected = snapshot("Town01", 1)
     with pytest.raises(SamplingError) as error:
         sample_variants([selected], find_cut_in_sites([selected]).sites, constraints, target_count=1, seed=1)
     assert error.value.code == code
+
+
+def test_ambiguities_are_notes_and_the_open_choices_are_sampled() -> None:
+    selected = snapshot("Town01", 1)
+    result = sample_variants([selected], find_cut_in_sites([selected]).sites,
+                             PromptConstraints(ambiguities=["tốc độ không rõ đơn vị"]), target_count=1, seed=1)
+    assert len(result.variants) == 1
 
 
 def test_site_from_unselected_map_is_rejected() -> None:

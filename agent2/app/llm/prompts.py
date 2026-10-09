@@ -7,15 +7,24 @@ import json
 from app.cut_in.sample import SampledVariant
 
 EXTRACT_SYSTEM = """Bạn trích ràng buộc cho DUY NHẤT tình huống xe máy tạt đầu ô tô.
+Cùng tình huống này: tạt đầu, cắt đầu, cắt ngang đầu xe, chen/lấn vào làn phía trước ô tô, cut-in.
 Chỉ ghi điều kiện được người dùng nói rõ. Thiếu thông tin thì để null hoặc danh sách rỗng; hệ thống sẽ chọn ngẫu nhiên sau.
 location_tags chỉ dùng: straight, curve, junction, junction_approach, intersection_4way.
 "ngã tư" phải là intersection_4way; junction không chứng minh là ngã tư.
 weather_conditions chỉ dùng: sunny, rain, cloudy, wet, dust, fog. Các điều kiện trong danh sách phải cùng xuất hiện.
 lighting chỉ dùng day, night, sunset; road_surface chỉ dùng dry, wet, slippery.
 Tốc độ trả theo km/h. Nếu không rõ tốc độ thuộc xe nào hoặc đơn vị là gì, ghi vào ambiguities.
+Thiếu thông tin KHÔNG phải ambiguity: không nêu tốc độ, khoảng cách, thời điểm, thời tiết hay mặt đường là bình thường.
+ambiguities chỉ dành cho điều người dùng đã nói nhưng mâu thuẫn hoặc hiểu được theo nhiều cách.
+Câu yêu cầu hệ thống tự chọn tham số không phải điều kiện; bỏ qua.
 Nếu yêu cầu điều kiện ngoài miền hỗ trợ (ví dụ tuyết), ghi vào unsupported_requirements, không bỏ qua.
-Nếu prompt không mô tả xe máy tạt đầu ô tô hoặc mô tả tình huống khác, ghi vào unsupported_requirements.
-Đừng tự thêm điều kiện địa điểm, thời tiết, tốc độ hoặc tọa độ."""
+Chỉ ghi tình huống khác vào unsupported_requirements khi prompt NÊU RÕ tác nhân hoặc hành vi khác
+(người đi bộ, xe đạp, xe tải tạt đầu, vượt đèn đỏ, va chạm từ phía sau...).
+Prompt ngắn, không nêu loại xe hoặc chỉ nói "tạt đầu"/"cắt ngang đầu xe" vẫn là xe máy tạt đầu ô tô.
+Đừng tự thêm điều kiện địa điểm, thời tiết, tốc độ hoặc tọa độ.
+Ví dụ: "Xe máy tạt đầu ô tô trên đường", "tạt đầu", "xe máy cắt ngang đầu xe ô tô"
+-> mọi trường null hoặc rỗng, ambiguities=[], unsupported_requirements=[].
+Ví dụ: "Xe máy tạt đầu ô tô khi trời có tuyết" -> unsupported_requirements=[{"quote": "trời có tuyết", "reason": "tuyết ngoài miền hỗ trợ"}]."""
 
 
 PROPOSE_SYSTEM = """Bạn chỉ đề xuất thao tác xe máy từ làn kề tạt vào phía trước ô tô.

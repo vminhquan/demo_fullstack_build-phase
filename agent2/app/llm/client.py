@@ -9,7 +9,7 @@ from app.cut_in.model import CutInPlan, PromptConstraints
 from app.cut_in.sample import SampledVariant
 from app.llm.prompts import extraction_messages, proposal_messages
 from app.llm.tools import Toolbox, tool_result
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 
 # Rounds in which the model may call tools; the round after them must answer.
@@ -22,6 +22,15 @@ class LLMCallError(RuntimeError):
         super().__init__(message)
 
 
+class _Unsupported(BaseModel):
+    quote: str = Field(description="Nguyên văn đoạn trong prompt nêu yêu cầu này.")
+    reason: str
+
+
+def _words(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
 class _PromptExtraction(BaseModel):
     """All fields required for the API's strict JSON schema; null means absent."""
 
@@ -31,8 +40,11 @@ class _PromptExtraction(BaseModel):
     road_surface: str | None
     ego_speed_kmh: float | None
     motorcycle_speed_kmh: float | None
-    ambiguities: list[str]
-    unsupported_requirements: list[str]
+    ambiguities: list[str] = Field(
+        description="Chỉ điều người dùng ĐÃ NÓI nhưng mâu thuẫn hoặc hiểu nhiều cách. Không ghi thông tin bị thiếu.")
+    unsupported_requirements: list[_Unsupported] = Field(
+        description="Chỉ điều kiện người dùng ĐÃ YÊU CẦU nằm ngoài miền hỗ trợ (ví dụ tuyết, tình huống khác). "
+                    "Không ghi thông tin bị thiếu; hệ thống tự chọn phần thiếu.")
 
 
 class _ManeuverProposal(BaseModel):
@@ -103,8 +115,12 @@ class OpenAILLM:
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
         parsed = self._parse(extraction_messages(prompt, map_names if tools else None), _PromptExtraction, tools)
+        # A requirement only blocks when the model quotes where the user asked for it; "nothing was said about X"
+        # has no quote, so missing details are sampled instead of rejected.
+        unsupported = [f'"{item.quote.strip()}": {item.reason}' for item in parsed.unsupported_requirements
+                       if item.quote.strip() and _words(item.quote) in _words(prompt)]
         try:
-            return PromptConstraints.model_validate(parsed.model_dump())
+            return PromptConstraints.model_validate({**parsed.model_dump(), "unsupported_requirements": unsupported})
         except ValidationError as exc:
             raise LLMCallError("LLM_INVALID_CONSTRAINTS", "Ràng buộc trích từ prompt không hợp lệ.") from exc
 

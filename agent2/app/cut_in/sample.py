@@ -105,8 +105,6 @@ def is_motorcycle_blueprint(blueprint: Blueprint) -> bool:
 def _canonical_constraints(constraints: PromptConstraints) -> tuple[set[str], str | None, str | None]:
     if constraints.unsupported_requirements:
         raise SamplingError("UNSUPPORTED_REQUIREMENT", "Prompt chứa yêu cầu chưa được hỗ trợ: " + "; ".join(constraints.unsupported_requirements))
-    if constraints.ambiguities:
-        raise SamplingError("AMBIGUOUS_PROMPT", "Prompt có ràng buộc cần làm rõ: " + "; ".join(constraints.ambiguities))
     weather = set()
     for raw in constraints.weather_conditions:
         condition = WEATHER_ALIASES.get(raw.strip().lower())
