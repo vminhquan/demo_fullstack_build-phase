@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -41,6 +44,7 @@ def test_catalog_shape(fake_carla) -> None:
     assert town03["format"] == "scenario-forge.catalog.v1" and town03["map_name"] == "Town03"
     assert "AnnotationColorLandscape" in town03["available_maps"]
     assert len(town03["waypoints"]) == 300 and town03["spawn_points"]
+    assert town03["cut_in_sites"] == []  # Fake CARLA exposes no neighboring-lane topology.
     # number_of_wheels is an Int attribute in CARLA (as_str() would raise): read through as_int().
     wheels = {item["id"]: item["number_of_wheels"] for item in town03["vehicles"]}
     assert wheels == {"vehicle.tesla.model3": 4, "vehicle.yamaha.yzf": 2}
@@ -77,3 +81,16 @@ def test_missing_carla_package_is_explained(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "carla", None)
     with pytest.raises(carla_catalog.CarlaUnavailable, match="setup-runner"):
         list(carla_catalog.collect("127.0.0.1", 2000))
+
+
+def test_catalog_script_runs_in_runner_python_with_site_module() -> None:
+    script = Path(carla_catalog.__file__)
+    result = subprocess.run(
+        [sys.executable, str(script), "--maps", "Town03"],
+        env={**os.environ, "PYTHONPATH": FAKE},
+        capture_output=True, text=True, check=True,
+    )
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    catalog = next(event["catalog"] for event in events if event["event"] == "result")
+    assert catalog["map_name"] == "Town03"
+    assert catalog["cut_in_sites"] == []

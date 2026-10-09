@@ -1,4 +1,4 @@
-# Render Blueprint: Postgres (pgvector) + FastAPI backend (Docker) + scenario Agent (Docker) + Next.js frontend (Node).
+# Render Blueprint: Postgres (pgvector) + FastAPI backend (Docker) + agent2 (Docker) + Next.js frontend (Node).
 # Deploy: Render Dashboard → New → Blueprint → chọn repo này. Hướng dẫn đầy đủ: docs/17-deploy-render.md
 databases:
   - name: scenario-forge-db
@@ -35,20 +35,20 @@ services:
       # Frontend origin, e.g. https://scenario-forge-web.onrender.com (set after the first deploy).
       - key: CORS_ORIGINS
         sync: false
-      # Agent public URL, e.g. https://scenario-forge-agent.onrender.com (set after the first deploy).
+      # Agent2 public URL, e.g. https://scenario-forge-agent2.onrender.com (set after the first deploy).
       - key: AGENT_SERVICE_URL
         sync: false
       - key: AGENT_API_KEY
         fromService:
           type: web
-          name: scenario-forge-agent
+          name: scenario-forge-agent2
           envVarKey: AGENT_API_KEY
 
   - type: web
-    name: scenario-forge-agent
+    name: scenario-forge-agent2
     runtime: docker
-    dockerContext: ./agent
-    dockerfilePath: ./agent/Dockerfile
+    dockerContext: ./agent2
+    dockerfilePath: ./agent2/Dockerfile
     plan: free
     healthCheckPath: /health
     envVars:
@@ -58,7 +58,7 @@ services:
         generateValue: true
       - key: OPENAI_API_KEY
         sync: false
-      - key: MODEL_NAME
+      - key: AGENT2_MODEL_NAME
         value: gpt-4o-mini
 
   - type: web

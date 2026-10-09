@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import zipfile
 from pathlib import Path
@@ -45,6 +46,14 @@ def test_content_hash_ignores_sender_hash_and_detects_changes() -> None:
     first = content_hash(CatalogV1(**raw))
     assert content_hash(CatalogV1(**{**raw, "content_hash": "forged"})) == first
     assert content_hash(CatalogV1(**{**raw, "map_name": "Town05"})) != first
+
+
+def test_site_index_preserves_legacy_hash_but_changes_indexed_catalog_hash() -> None:
+    raw = json.loads(DEFAULT_CATALOG.read_text(encoding="utf-8"))
+    old_canonical = CatalogV1(**raw).model_dump(mode="json", exclude={"content_hash", "cut_in_sites"})
+    expected = hashlib.sha256(json.dumps(old_canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    assert content_hash(CatalogV1(**raw)) == expected
+    assert content_hash(CatalogV1(**{**raw, "cut_in_sites": []})) != expected
 
 
 def test_parse_catalog_rejects_non_catalog_documents() -> None:
@@ -177,7 +186,7 @@ def test_labels_are_readable() -> None:
     assert vehicle_label("vehicle.mercedes.coupe_2020") == "Mercedes Coupe 2020"
 
 
-def test_agent_client_sends_form_to_refine_and_constraints_to_generate(monkeypatch) -> None:
+def test_agent_client_maps_cut_in_request_and_response(monkeypatch) -> None:
     import asyncio
 
     import httpx
@@ -188,16 +197,26 @@ def test_agent_client_sends_form_to_refine_and_constraints_to_generate(monkeypat
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append((request.url.path, json.loads(request.content)))
-        return httpx.Response(200, json={"ok": True})
+        return httpx.Response(200, json={"model_name": "gpt-4o-mini", "scenarios": [{
+            "scenario_id": "abc", "snapshot": {"map_name": "Town01"}, "site_id": "site-1",
+            "plan": {"ego_blueprint_id": "vehicle.tesla.model3", "motorcycle_blueprint_id": "vehicle.yamaha.yzf",
+                     "environment": {"weather_preset": "ClearNoon", "weather_conditions": ["sunny"], "time_of_day_hour": 12}},
+            "validation": {"issues": []}, "xosc": "<OpenSCENARIO/>", "xosc_sha256": "a" * 64,
+        }]})
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
-    client = HttpAgentClient("http://agent", "", 5)
-    spec = {"scenario_type": "cut_in", "weather": ["rain"]}
-    asyncio.run(client.refine(spec=spec, catalog={"schema": "x"}, seed=1))
-    asyncio.run(client.generate(prompt="p", catalog={}, auto_repair=True, seed=1, constraints={"max_actors": 1}))
-    assert calls[0] == ("/v1/prompts/refine", {"spec": spec, "catalog": {"schema": "x"}, "seed": 1})
-    assert calls[1][0] == "/v1/scenarios/generate" and calls[1][1]["constraints"] == {"max_actors": 1}
+    client = HttpAgentClient("http://agent2", "key", 5)
+    catalog = {"map_name": "Town01", "carla_version": "0.9.16", "weather_presets": ["ClearNoon"],
+               "cut_in_sites": [{"site_id": "site-1", "location_tags": ["straight"]}]}
+    result = asyncio.run(client.generate(prompt="Xe máy tạt đầu ô tô", catalog=catalog, auto_repair=True, seed=1,
+                                         constraints={"ego_blueprint": "vehicle.tesla.model3"}, snapshot_id=42,
+                                         content_hash="b" * 64, environment_code="ClearNoon"))
+    assert calls[0][0] == "/v1/scenarios/generate"
+    request = calls[0][1]
+    assert request["selected_snapshots"][0]["ref"] == {"snapshot_id": 42, "map_name": "Town01", "content_hash": "b" * 64}
+    assert request["ego_blueprint_id"] == "vehicle.tesla.model3" and request["weather_preset"] == "ClearNoon"
+    assert result["generation_mode"] == "agent2_cut_in" and result["scenario_ir"]["actors"][0]["actor_type"] == "motorcycle"
 
 
 @pytest.mark.parametrize(

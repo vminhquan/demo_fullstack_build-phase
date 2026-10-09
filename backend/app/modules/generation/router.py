@@ -181,7 +181,9 @@ async def create_generation(
         # Release the read transaction while the Agent works (LLM calls take seconds).
         await session.commit()
         result = await call_agent(session, actor, "GENERATE", agent.generate(
-            prompt=body.prompt, catalog=snapshot.catalog, auto_repair=body.auto_repair, seed=body.seed, constraints=constraints
+            prompt=body.prompt, catalog=snapshot.catalog, auto_repair=body.auto_repair, seed=body.seed, constraints=constraints,
+            snapshot_id=snapshot.id, content_hash=snapshot.content_hash,
+            environment_code=body.metadata.environment_code if body.metadata else None,
         ), **context)
         xosc = result.pop("xosc")
     if body.spec is not None or constraints is not None:

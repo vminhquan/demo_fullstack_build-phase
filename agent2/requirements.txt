@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+openai
+langgraph>=1.2,<2

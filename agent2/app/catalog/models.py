@@ -1,17 +1,20 @@
-"""catalog.v1 shared with Bridge and agent2 catalog snapshots.
+"""CARLA catalog input and verified cut-in site contracts.
 
-All poses use CARLA world coordinates: metres, left-handed (x forward, y right), yaw in degrees.
+The catalog shape matches the Bridge's ``scenario-forge.catalog.v1`` payload.
+Sampled waypoints alone do not prove lane adjacency, so ``CutInSite`` is a
+separate, verified result produced by a later site-finding step.
 """
+
 from __future__ import annotations
 
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-CATALOG_FORMAT = "scenario-forge.catalog.v1"
-
 
 class Pose(BaseModel):
+    """CARLA world coordinates: metres and yaw in degrees."""
+
     x: float
     y: float
     z: float = 0.0
@@ -30,7 +33,6 @@ class LaneWaypoint(Pose):
 
 class Blueprint(BaseModel):
     id: str = Field(min_length=1, max_length=255)
-    # CARLA "base_type" attribute: car, truck, van, bus, motorcycle, bicycle (empty for some models).
     base_type: str | None = None
     number_of_wheels: int | None = None
 
@@ -42,6 +44,8 @@ class LaneRef(BaseModel):
 
 
 class CatalogCutInSite(BaseModel):
+    """A site verified at CARLA sync time, before a snapshot ID exists."""
+
     site_id: str = Field(min_length=1)
     ego_lane: LaneRef
     motorcycle_lane: LaneRef
@@ -63,9 +67,8 @@ class CatalogCutInSite(BaseModel):
 
 
 class CatalogV1(BaseModel):
-    format: Literal["scenario-forge.catalog.v1"] = CATALOG_FORMAT
+    format: Literal["scenario-forge.catalog.v1"] = "scenario-forge.catalog.v1"
     carla_version: str = Field(min_length=1, max_length=64)
-    # Short map name as CARLA loads it, e.g. "Town10HD_Opt" (not "Carla/Maps/Town10HD_Opt").
     map_name: str = Field(min_length=1, max_length=120)
     available_maps: list[str] = Field(default_factory=list)
     opendrive_hash: str | None = None
@@ -74,7 +77,37 @@ class CatalogV1(BaseModel):
     spawn_points: list[Pose] = Field(min_length=1)
     waypoints: list[LaneWaypoint] = Field(min_length=1)
     weather_presets: list[str] = Field(default_factory=list)
-    # None = old snapshot without a site index; [] = checked, no suitable site found.
+    # None means a legacy catalog with no site index; [] means the Bridge checked and found none.
     cut_in_sites: list[CatalogCutInSite] | None = None
-    # Set by the Backend when it stores the snapshot; echoed into generation results for traceability.
     content_hash: str | None = None
+
+
+class SnapshotRef(BaseModel):
+    """Immutable identity of the catalog selected by the Backend."""
+
+    snapshot_id: int = Field(gt=0)
+    map_name: str = Field(min_length=1, max_length=120)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class SelectedSnapshot(BaseModel):
+    ref: SnapshotRef
+    catalog: CatalogV1
+
+    @model_validator(mode="after")
+    def matches_catalog(self) -> SelectedSnapshot:
+        if self.ref.map_name != self.catalog.map_name:
+            raise ValueError("Snapshot map_name does not match the catalog")
+        if self.catalog.content_hash and self.ref.content_hash != self.catalog.content_hash:
+            raise ValueError("Snapshot content_hash does not match the catalog")
+        return self
+
+
+class CutInSite(CatalogCutInSite):
+    """A verified pair of adjacent same-direction driving lanes.
+
+    Its actual topology proof belongs to the site finder, not this schema.
+    ``available_length_m`` is the continuous usable distance for the maneuver.
+    """
+
+    snapshot: SnapshotRef

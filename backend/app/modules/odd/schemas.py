@@ -107,7 +107,7 @@ class PlannedCase(BaseModel):
     catalog_snapshot_id: int
     map_name: str
     cell: dict[str, str]
-    # Single-valued agent ScenarioSpec (agent/app/scenario/spec.py) for POST /scenario-generations/refine.
+    # Legacy ScenarioSpec for POST /scenario-generations/refine; agent2 currently rejects it.
     spec: dict[str, Any]
 
 

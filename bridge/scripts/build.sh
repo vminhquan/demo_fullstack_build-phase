@@ -10,5 +10,6 @@ pip install -e '.[dev]'
 pyinstaller --onefile --clean --name scenario-forge-bridge \
   --collect-submodules keyring.backends --collect-submodules questionary \
   --add-data "scenario_forge_bridge/carla_catalog.py:scenario_forge_bridge" \
+  --add-data "scenario_forge_bridge/cut_in_sites.py:scenario_forge_bridge" \
   pyinstaller_entry.py
 echo "Built: $(pwd)/dist/scenario-forge-bridge"

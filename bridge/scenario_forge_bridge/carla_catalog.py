@@ -13,6 +13,12 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
+if __package__:
+    from .cut_in_sites import extract_cut_in_sites
+else:
+    # runtime.collect executes this file directly with ScenarioRunner's Python.
+    from cut_in_sites import extract_cut_in_sites
+
 CATALOG_FORMAT = "scenario-forge.catalog.v1"
 WAYPOINT_SPACING_M = 2.0
 RPC_TIMEOUT_S = 30.0
@@ -128,6 +134,7 @@ def map_catalog(
 ) -> dict[str, Any]:
     carla_map = world.get_map()
     opendrive = carla_map.to_opendrive()
+    waypoints = carla_map.generate_waypoints(spacing)
     return {
         "format": CATALOG_FORMAT,
         "carla_version": carla_version,
@@ -137,8 +144,9 @@ def map_catalog(
         "vehicles": vehicles,
         "walkers": walkers,
         "spawn_points": [_pose(item) for item in carla_map.get_spawn_points()],
-        "waypoints": [_waypoint(item) for item in carla_map.generate_waypoints(spacing)],
+        "waypoints": [_waypoint(item) for item in waypoints],
         "weather_presets": presets,
+        "cut_in_sites": extract_cut_in_sites(waypoints),
     }
 
 

@@ -73,7 +73,7 @@ def suggested_metadata(result: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- metadata -> Agent constraints
 # The reverse direction: the 5 metadata a creator picked on /test-cases/new become generation
-# constraints (agent/app/scenario/spec.py GenerationConstraints), so the .xosc matches them.
+# constraints for the Backend adapter. Agent2 accepts only motorcycle cut-ins.
 ACTOR_FROM_ADVERSARY = {
     "pedestrian": "pedestrian", "motorcycle": "motorcycle", "cyclist": "bicycle",
     "car": "car", "van": "car", "truck": "truck", "bus": "truck",

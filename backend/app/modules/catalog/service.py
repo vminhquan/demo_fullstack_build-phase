@@ -22,6 +22,14 @@ from app.shared.infrastructure.models import CarlaCatalogSnapshot, CatalogSource
 def content_hash(catalog: CatalogV1) -> str:
     """Stable digest of the catalog content (ignores any hash the sender put in the document)."""
     canonical = catalog.model_dump(mode="json", exclude={"content_hash"})
+    # Preserve hashes of catalogs created before cut_in_sites was added to catalog.v1.
+    if canonical["cut_in_sites"] is None:
+        del canonical["cut_in_sites"]
+    else:
+        for site in canonical["cut_in_sites"]:
+            for key in ("ego_s", "motorcycle_s", "s_direction", "target_side"):
+                if site[key] is None:
+                    del site[key]
     return hashlib.sha256(json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

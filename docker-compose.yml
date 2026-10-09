@@ -16,7 +16,7 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://scenario:${DB_PASSWORD}@postgres:5432/scenario_forge
-      AGENT_SERVICE_URL: http://agent:8100
+      AGENT_SERVICE_URL: http://agent2:8100
     ports:
       - "8000:8000"
     depends_on:
@@ -41,14 +41,14 @@ services:
         condition: service_healthy
     restart: "no"
 
-  agent:
-    build: ./agent
-    # Only what the Agent needs; it has no database access.
+  agent2:
+    build: ./agent2
+    # Agent2 receives selected CARLA snapshots from the Backend; no database access.
     environment:
       APP_ENV: ${APP_ENV:-development}
       AGENT_API_KEY: ${AGENT_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      MODEL_NAME: ${MODEL_NAME:-gpt-4o-mini}
+      AGENT2_MODEL_NAME: ${AGENT2_MODEL_NAME:-gpt-4o-mini}
     expose:
       - "8100"
     healthcheck:

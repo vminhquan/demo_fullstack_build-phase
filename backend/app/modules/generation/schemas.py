@@ -39,7 +39,7 @@ GenerationCreate.model_rebuild()
 
 
 class GenerationRefine(BaseModel):
-    """Structured form (ODD + parameter ranges); validated by the Agent (agent/app/scenario/spec.py)."""
+    """Legacy structured form; agent2 reports UNSUPPORTED_FORM until a cut-in form is defined."""
 
     spec: dict[str, Any]
     catalog_source: Literal["DEFAULT", "PROJECT"] = "DEFAULT"

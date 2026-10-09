@@ -28,8 +28,8 @@ services:
       - ./backend/migrations:/app/migrations
       - ./backend/alembic.ini:/app/alembic.ini
 
-  agent:
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8100", "--reload", "--reload-dir", "app"]
+  agent2:
+    command: ["uvicorn", "app.api:app", "--host", "0.0.0.0", "--port", "8100", "--reload", "--reload-dir", "app"]
     volumes:
-      - ./agent/app:/app/app
-      - ./agent/knowledge:/app/knowledge
+      - ./agent2/app:/app/app
+      - ./agent2/knowledge:/app/knowledge
