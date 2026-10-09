@@ -8,6 +8,8 @@ branches and older waypoint-only catalogs rather than guessing topology.
 A site needs MIN_CORRIDOR_M; its location tags describe those first metres (as
 before catalog.v2), while available_length_m and the corridor facts follow the
 verified pair up to MAX_CORRIDOR_M ahead and MAX_UPSTREAM_M behind the anchor.
+A corridor that stops at a junction within APPROACH_MAX_M is a junction_approach
+(the catalog adds intersection_4way when that junction has four incoming roads).
 """
 
 from __future__ import annotations
@@ -25,6 +27,9 @@ MAX_UPSTREAM_M = 100.0
 MAX_STEPS = 2 * math.ceil(MAX_CORRIDOR_M / CHECK_STEP_M) + 3
 MAX_HEADING_DIFFERENCE_DEG = 20.0
 CURVE_HEADING_CHANGE_DEG = 15.0
+# A junction this far ahead of the anchor at most still makes the site an approach to it.
+APPROACH_MAX_M = 150.0
+JUNCTION_LOOKAHEAD_STEPS = 2
 
 
 def _lane_ref(waypoint: Any) -> dict[str, int]:
@@ -41,7 +46,8 @@ def _pose(waypoint: Any) -> dict[str, float]:
         "x": round(float(transform.location.x), 2),
         "y": round(float(transform.location.y), 2),
         "z": round(float(transform.location.z), 2),
-        "yaw": round(float(transform.rotation.yaw), 2),
+        # CARLA returns values such as -450.3; [-180, 180) like the catalog's other poses.
+        "yaw": round((float(transform.rotation.yaw) + 180.0) % 360.0 - 180.0, 2),
     }
 
 
@@ -103,6 +109,33 @@ def _predecessor(waypoint: Any) -> Any | None:
     except (AttributeError, RuntimeError):
         return None
     return previous_waypoints[0] if len(previous_waypoints) == 1 else None
+
+
+def _junction_id(waypoint: Any) -> int | None:
+    value = getattr(waypoint, "junction_id", None)
+    if value is None:
+        try:
+            value = waypoint.get_junction().id
+        except (AttributeError, RuntimeError):
+            return None
+    return int(value) if int(value) >= 0 else None
+
+
+def _junction_ahead(waypoint: Any) -> int | None:
+    """Id of the junction the lane enters within a couple of steps after `waypoint`, if any."""
+    frontier = [waypoint]
+    for _ in range(JUNCTION_LOOKAHEAD_STEPS):
+        following = []
+        for item in frontier:
+            try:
+                following.extend(item.next(CHECK_STEP_M))
+            except (AttributeError, RuntimeError):
+                continue
+        for item in following:
+            if item.is_junction and (junction_id := _junction_id(item)) is not None:
+                return junction_id
+        frontier = following
+    return None
 
 
 def _crossing_allowed(source: Any, side: str) -> bool | None:
@@ -193,8 +226,12 @@ def _verified_corridor(source: Any, target: Any, side: str) -> dict[str, Any] | 
         current_source, current_target = next_source, next_target
     if tags is None or s_direction is None:
         return None
+    ahead = None if ends_at == "max_length" else _junction_ahead(current_source)
+    if ahead is not None and length <= APPROACH_MAX_M and "junction" not in tags and "junction_approach" not in tags:
+        tags = [*tags, "junction_approach"]
     return {
         "length": round(length, 2), "tags": tags, "s_direction": s_direction, "ends_at": ends_at,
+        "junction_ahead": None if ahead is None else {"junction_id": ahead, "distance_m": round(length, 2)},
         "max_turn": round(max_turn, 1), "first_junction_m": first_junction_m,
         "lane_change_allowed": allowed, "markings": sorted(markings),
     }
@@ -265,6 +302,7 @@ def extract_cut_in_sites(waypoints: Iterable[Any]) -> list[dict[str, Any]]:
                 "max_heading_change_deg": verified["max_turn"],
                 "first_junction_m": verified["first_junction_m"],
                 "ends_at": verified["ends_at"],
+                "junction_ahead": verified["junction_ahead"],
                 "lane_width_m": {"ego": round(float(target.lane_width), 2), "motorcycle": round(float(source.lane_width), 2)},
             })
     return sorted(sites, key=lambda item: item["site_id"])

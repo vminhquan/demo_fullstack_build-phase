@@ -34,6 +34,7 @@ RUNTIME_TRAFFIC_LIGHT_FIELDS = ("actor_id", "group_actor_ids")
 LATE_SITE_FIELDS = (
     "ego_s", "motorcycle_s", "s_direction", "target_side", "upstream_length_m", "lane_change_allowed_throughout",
     "marking_between", "max_heading_change_deg", "first_junction_m", "ends_at", "lane_width_m", "speed_limit_kmh",
+    "junction_ahead",
 )
 
 

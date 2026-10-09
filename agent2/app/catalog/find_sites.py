@@ -61,10 +61,12 @@ def find_cut_in_sites(
             if required_tags.issubset({tag.lower() for tag in record.location_tags})
         ]
         if not matching_location:
+            available = sorted({tag.lower() for record in records for tag in record.location_tags})
             failures.append(MapFailure(
                 snapshot=selected.ref,
                 code="LOCATION_NOT_AVAILABLE",
-                message="Map này không có vị trí tạt đầu đã xác minh phù hợp với địa điểm yêu cầu.",
+                message=(f"Map này không có vị trí tạt đầu đã xác minh có {', '.join(sorted(required_tags))}; "
+                         f"map có: {', '.join(available)}."),
             ))
             continue
         long_enough = [record for record in matching_location if record.available_length_m >= min_length_m]

@@ -146,6 +146,12 @@ def map_catalog(
     sites = extract_cut_in_sites(waypoints)
     for site in sites:
         site["speed_limit_kmh"] = map_facts.speed_at(speeds, site["ego_lane"]["road_id"], site["ego_s"])
+    junctions = map_facts.guarded(errors, "junctions", lambda: map_facts.junctions(carla, waypoints, opendrive))
+    four_way = {item["junction_id"] for item in junctions or [] if item.get("four_way_candidate")}
+    for site in sites:
+        ahead = site.get("junction_ahead")
+        if ahead and ahead["junction_id"] in four_way and "junction_approach" in site["location_tags"]:
+            site["location_tags"] = [*site["location_tags"], "intersection_4way"]
     catalog = {
         "format": CATALOG_FORMAT,
         "carla_version": carla_version,
@@ -162,7 +168,7 @@ def map_catalog(
         "weather_parameters": weather,
         "cut_in_sites": sites,
         "road_speeds": speeds,
-        "junctions": map_facts.guarded(errors, "junctions", lambda: map_facts.junctions(carla, waypoints, opendrive)),
+        "junctions": junctions,
         "landmarks": map_facts.guarded(errors, "landmarks", lambda: map_facts.landmarks(carla_map)),
         "traffic_lights": map_facts.guarded(errors, "traffic_lights", lambda: map_facts.traffic_lights(world)),
         "crosswalks": map_facts.guarded(errors, "crosswalks", lambda: map_facts.crosswalks(carla, carla_map)),

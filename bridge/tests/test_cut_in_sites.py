@@ -133,3 +133,37 @@ def test_lane_rule_unknown_on_older_carla() -> None:
     sources, _ = corridor()
     [site] = extract_cut_in_sites([sources[0]])
     assert site["lane_change_allowed_throughout"] is None and site["marking_between"] == []
+
+
+def ending_at_junction(steps: int, *, junction_id: int = 77):
+    """A corridor whose lanes run into junction `junction_id` one step after the last verified waypoint."""
+    anchor = long_corridor(steps, anchor=0)
+    last = anchor
+    while last.successors:
+        last = last.successors[0]
+    entry = RuledWaypoint(last.transform.location.x + 5.0, 0.0, -1)
+    entry.is_junction, entry.junction_id = True, junction_id
+    last.successors = [entry, RuledWaypoint(last.transform.location.x + 5.0, -3.0, -1)]  # the lane branches here
+    return anchor
+
+
+def test_corridor_running_into_a_junction_is_an_approach() -> None:
+    [site] = extract_cut_in_sites([ending_at_junction(20)])
+    assert site["ends_at"] == "branch_or_end"
+    assert site["junction_ahead"] == {"junction_id": 77, "distance_m": 95.0}
+    assert site["location_tags"] == ["straight", "junction_approach"]
+
+
+def test_far_junction_is_reported_but_not_an_approach() -> None:
+    [site] = extract_cut_in_sites([ending_at_junction(40)])
+    assert site["junction_ahead"]["distance_m"] == 195.0 and site["location_tags"] == ["straight"]
+
+
+def test_anchor_yaw_is_normalised() -> None:
+    anchor = long_corridor(20, anchor=0)
+    node = anchor
+    while node is not None:
+        node.transform.rotation.yaw = node.left.transform.rotation.yaw = -450.0
+        node = node.successors[0] if node.successors else None
+    [site] = extract_cut_in_sites([anchor])
+    assert site["ego_anchor"]["yaw"] == -90.0 and site["junction_ahead"] is None

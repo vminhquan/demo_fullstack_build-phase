@@ -35,7 +35,7 @@ def compact_site(site: dict[str, Any]) -> dict[str, Any]:
         key: _round(site.get(key)) for key in (
             "site_id", "location_tags", "available_length_m", "upstream_length_m", "speed_limit_kmh", "target_side",
             "lane_change_allowed_throughout", "marking_between", "max_heading_change_deg", "first_junction_m", "ends_at",
-            "lane_width_m",
+            "lane_width_m", "junction_ahead",
         )
     }
     if compact["speed_limit_kmh"] is None:

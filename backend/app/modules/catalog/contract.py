@@ -89,6 +89,13 @@ class LaneWidths(BaseModel):
     motorcycle: float
 
 
+class JunctionAhead(BaseModel):
+    """The junction the corridor runs into, and how far it is from the anchor."""
+
+    junction_id: int
+    distance_m: float
+
+
 class CatalogCutInSite(BaseModel):
     site_id: str = Field(min_length=1)
     ego_lane: LaneRef
@@ -109,6 +116,7 @@ class CatalogCutInSite(BaseModel):
     max_heading_change_deg: float | None = None
     first_junction_m: float | None = None
     ends_at: str | None = None  # max_length, lane_pair_ends, branch_or_end, discontinuity, step_limit
+    junction_ahead: JunctionAhead | None = None
     lane_width_m: LaneWidths | None = None
     speed_limit_kmh: float | None = None
 

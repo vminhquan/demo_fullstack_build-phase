@@ -133,3 +133,15 @@ def test_catalog_script_runs_in_runner_python_with_site_module() -> None:
     catalog = next(event["catalog"] for event in events if event["event"] == "result")
     assert catalog["map_name"] == "Town03"
     assert catalog["cut_in_sites"] == []
+
+
+def test_approach_to_a_four_way_junction_is_tagged(fake_carla, monkeypatch) -> None:
+    site = {"ego_lane": {"road_id": 1}, "ego_s": 0.0, "location_tags": ["straight", "junction_approach"],
+            "junction_ahead": {"junction_id": 900, "distance_m": 80.0}}
+    other = {**site, "junction_ahead": {"junction_id": 901, "distance_m": 80.0}, "location_tags": ["straight", "junction_approach"]}
+    monkeypatch.setattr(carla_catalog, "extract_cut_in_sites", lambda waypoints: [dict(site), dict(other)])
+    monkeypatch.setattr(carla_catalog.map_facts, "junctions", lambda *args: [
+        {"junction_id": 900, "four_way_candidate": True}, {"junction_id": 901, "four_way_candidate": False}])
+    town03 = next(item for item in carla_catalog.collect("127.0.0.1", 2000) if item.map_name == "Town03").catalog
+    tags = [item["location_tags"] for item in town03["cut_in_sites"]]
+    assert tags == [["straight", "junction_approach", "intersection_4way"], ["straight", "junction_approach"]]

@@ -79,6 +79,7 @@ def v2_document() -> dict:
             "location_tags": ["straight"], "verification_source": "carla_topology", "ego_s": 0.0, "motorcycle_s": 0.0,
             "s_direction": 1, "target_side": "left", "upstream_length_m": 40.0, "lane_change_allowed_throughout": True,
             "marking_between": ["Broken"], "max_heading_change_deg": 6.2, "first_junction_m": 150.0, "ends_at": "max_length",
+            "junction_ahead": {"junction_id": 939, "distance_m": 120.0},
             "lane_width_m": {"ego": 3.5, "motorcycle": 3.25}, "speed_limit_kmh": 64.4,
         }],
         "road_speeds": [{"road_id": 939, "from_s": 0.0, "max_kmh": 64.4}],
