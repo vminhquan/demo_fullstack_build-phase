@@ -5,18 +5,21 @@ an admin upload (IMPORT) and, once doc 18 is implemented, the Worker's `catalog.
 """
 from __future__ import annotations
 
+import gzip
 import hashlib
 import json
 from typing import Any
 
 from sqlalchemy import or_, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
+from sqlalchemy.orm.attributes import set_committed_value
 
 from app.modules.catalog.contract import CatalogV1
 from app.shared.domain.errors import CatalogUnavailable, NotFound, ValidationFailed
 from app.shared.infrastructure.audit import record_audit
-from app.shared.infrastructure.models import CarlaCatalogSnapshot, CatalogSource
+from app.shared.infrastructure.models import CarlaCatalogSnapshot, CarlaMapData, CatalogSource
 
 
 # Fields added after catalog.v1 shipped: left out of the digest while absent, so older snapshots keep their hash.
@@ -68,6 +71,52 @@ def parse_catalog(raw: dict[str, Any]) -> CatalogV1:
     return catalog
 
 
+def pack_map_data(waypoints: list[dict[str, Any]], opendrive_hash: str | None, opendrive_xml: str | None) -> dict[str, Any]:
+    """Row values of carla_map_data. The hash covers what makes the map: its waypoints and its OpenDRIVE."""
+    packed = json.dumps(waypoints, sort_keys=True, separators=(",", ":")).encode()
+    digest = hashlib.sha256(packed + b"\n" + (opendrive_hash or "").encode()).hexdigest()
+    return {
+        "data_hash": digest,
+        "waypoints_gz": gzip.compress(packed, compresslevel=6),
+        "opendrive_gz": gzip.compress(opendrive_xml.encode("utf-8"), compresslevel=6) if opendrive_xml is not None else None,
+    }
+
+
+async def store_map_data(session: AsyncSession, values: dict[str, Any]) -> int:
+    """Id of the carla_map_data row holding these values, inserting it unless the same map is already stored."""
+    await session.execute(insert(CarlaMapData).values(**values).on_conflict_do_nothing(index_elements=["data_hash"]))
+    stored = await session.scalar(
+        select(CarlaMapData).where(CarlaMapData.data_hash == values["data_hash"]).options(undefer(CarlaMapData.opendrive_gz))
+    )
+    if stored.opendrive_gz is None and values["opendrive_gz"] is not None:
+        stored.opendrive_gz = values["opendrive_gz"]
+    return stored.id
+
+
+async def with_waypoints(session: AsyncSession, document: dict[str, Any], map_data_id: int | None) -> dict[str, Any]:
+    """The whole catalog document: a stored one without waypoints gets them back from carla_map_data."""
+    if map_data_id is None or "waypoints" in document:
+        return document
+    packed = await session.scalar(select(CarlaMapData.waypoints_gz).where(CarlaMapData.id == map_data_id))
+    return {**document, "waypoints": json.loads(gzip.decompress(packed))}
+
+
+async def attach_waypoints(session: AsyncSession, snapshot: CarlaCatalogSnapshot) -> CarlaCatalogSnapshot:
+    """Put the waypoints back into a loaded `snapshot.catalog`, so readers see the whole document.
+
+    Set as the committed value: the row is never rewritten with the waypoints inline."""
+    set_committed_value(snapshot, "catalog", await with_waypoints(session, snapshot.catalog, snapshot.map_data_id))
+    return snapshot
+
+
+async def load_opendrive(session: AsyncSession, snapshot: CarlaCatalogSnapshot) -> str | None:
+    """OpenDRIVE of a snapshot, wherever it was stored."""
+    if snapshot.map_data_id is not None:
+        packed = await session.scalar(select(CarlaMapData.opendrive_gz).where(CarlaMapData.id == snapshot.map_data_id))
+        return gzip.decompress(packed).decode("utf-8") if packed is not None else None
+    return await session.scalar(select(CarlaCatalogSnapshot.opendrive_xml).where(CarlaCatalogSnapshot.id == snapshot.id))
+
+
 async def ingest_snapshot(
     session: AsyncSession,
     catalog: CatalogV1,
@@ -80,20 +129,20 @@ async def ingest_snapshot(
 ) -> tuple[CarlaCatalogSnapshot, bool]:
     """Store a snapshot unless the same content already exists in that scope. Returns (snapshot, created).
 
-    The OpenDRIVE text goes to its own deferred column: the JSON document is what the Agent receives."""
+    Waypoints and OpenDRIVE go to the shared carla_map_data; the snapshot row keeps the light JSON."""
     if (source is CatalogSource.DEFAULT) != (project_id is None):
         raise ValidationFailed("DEFAULT snapshots are global; IMPORT/WORKER snapshots belong to a project")
     digest = content_hash(catalog)
     scope = CarlaCatalogSnapshot.project_id.is_(None) if project_id is None else CarlaCatalogSnapshot.project_id == project_id
-    existing = await session.scalar(
-        select(CarlaCatalogSnapshot).where(scope, CarlaCatalogSnapshot.content_hash == digest)
-        .options(undefer(CarlaCatalogSnapshot.opendrive_xml))
-    )
-    if existing is not None:
-        if existing.opendrive_xml is None and catalog.opendrive_xml is not None:
-            existing.opendrive_xml = catalog.opendrive_xml
+    existing = await session.scalar(select(CarlaCatalogSnapshot).where(scope, CarlaCatalogSnapshot.content_hash == digest))
+    if existing is not None and (existing.map_data_id is None or catalog.opendrive_xml is None):
         return existing, False
     document = catalog.model_dump(mode="json", exclude_none=True, exclude={"opendrive_xml"})
+    map_data = pack_map_data(document.pop("waypoints"), catalog.opendrive_hash, catalog.opendrive_xml)
+    if existing is not None:
+        # Same content again, now with the OpenDRIVE an earlier upload may not have carried.
+        await store_map_data(session, map_data)
+        return existing, False
     document["content_hash"] = digest
     snapshot = CarlaCatalogSnapshot(
         project_id=project_id,
@@ -107,7 +156,7 @@ async def ingest_snapshot(
         vehicle_count=len(catalog.vehicles),
         walker_count=len(catalog.walkers),
         catalog=document,
-        opendrive_xml=catalog.opendrive_xml,
+        map_data_id=await store_map_data(session, map_data),
         label=label,
         created_by=actor_user_id,
     )
@@ -137,7 +186,7 @@ async def get_snapshot(session: AsyncSession, project_id: int, snapshot_id: int,
     snapshot = await session.scalar(statement)
     if snapshot is None:
         raise NotFound("CARLA catalog snapshot not found")
-    return snapshot
+    return await attach_waypoints(session, snapshot) if with_catalog else snapshot
 
 
 async def resolve_for_generation(
@@ -167,4 +216,4 @@ async def resolve_for_generation(
         if source == "DEFAULT":
             raise CatalogUnavailable("No default CARLA data is installed; run `python -m app.seed_catalog`", "CATALOG_NOT_INSTALLED")
         raise CatalogUnavailable("This project has no CARLA data from the user's machine yet; sync it with the Worker or import a catalog")
-    return snapshot
+    return await attach_waypoints(session, snapshot)

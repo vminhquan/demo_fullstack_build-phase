@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.catalog.options import build_options
-from app.modules.catalog.service import visible_to
+from app.modules.catalog.service import visible_to, with_waypoints
 from app.modules.generation.agent_client import AgentPort
 from app.modules.odd.schemas import MapCapability, OddDeclaration, OddGap
 from app.shared.domain.errors import AgentUnavailable, GenerationRejected
@@ -40,6 +40,7 @@ async def capabilities(session: AsyncSession, project_id: int, agent: AgentPort 
         error = None
         if snapshot.map_profile is None and agent is not None:
             full = await session.scalar(select(CarlaCatalogSnapshot.catalog).where(CarlaCatalogSnapshot.id == snapshot.id))
+            full = await with_waypoints(session, full, snapshot.map_data_id)
             try:
                 snapshot.map_profile = await agent.profile(catalog=full)
             except (AgentUnavailable, GenerationRejected) as exc:

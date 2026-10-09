@@ -403,6 +403,18 @@ class TestCaseDecision(IdTimestampMixin, Base):
     undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class CarlaMapData(IdTimestampMixin, Base):
+    """The heavy, map-only part of catalog snapshots — lane waypoints and OpenDRIVE — gzip-compressed and stored once
+    per content: Town04 and Town04_Opt, or two projects syncing the same CARLA, point to the same row."""
+
+    __tablename__ = "carla_map_data"
+
+    data_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    # gzip of the waypoints JSON list; bytea keeps the database from parsing megabytes of JSON on insert.
+    waypoints_gz: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
+    opendrive_gz: Mapped[bytes | None] = mapped_column(LargeBinary, deferred=True)
+
+
 class CarlaCatalogSnapshot(IdTimestampMixin, Base):
     """One catalog.v1/v2 document: maps, blueprints, spawn points, lane waypoints and map facts of a CARLA world."""
 
@@ -424,10 +436,12 @@ class CarlaCatalogSnapshot(IdTimestampMixin, Base):
     waypoint_count: Mapped[int] = mapped_column(Integer)
     vehicle_count: Mapped[int] = mapped_column(Integer)
     walker_count: Mapped[int] = mapped_column(Integer)
-    # Full catalog JSON (hundreds of KB to a few MB); deferred so listings stay light.
+    # Catalog JSON without the waypoints (see map_data_id); deferred so listings stay light.
     catalog: Mapped[dict[str, Any]] = mapped_column(JSONB, deferred=True)
-    # OpenDRIVE of the map (catalog.v2, ~1-5 MB), kept out of the JSON so the Agent payload does not carry it.
+    # Snapshots stored before carla_map_data keep the OpenDRIVE here and the waypoints inside `catalog`.
     opendrive_xml: Mapped[str | None] = mapped_column(Text, deferred=True)
+    # Newer snapshots: waypoints and OpenDRIVE live in carla_map_data and `catalog` has no "waypoints" key.
+    map_data_id: Mapped[int | None] = mapped_column(ForeignKey("carla_map_data.id"), index=True)
     label: Mapped[str | None] = mapped_column(String(200))
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"))
     # What the map can host (road types, lanes...), computed once by the Agent from the lane data.

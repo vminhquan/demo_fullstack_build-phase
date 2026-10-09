@@ -1,3 +1,4 @@
+import gzip
 import io
 import hashlib
 import json
@@ -9,7 +10,7 @@ import pytest
 from app.modules.catalog.contract import CatalogV1
 from app.modules.catalog.importers import from_upload, from_worker_context
 from app.modules.catalog.options import build_options, preset_label, vehicle_label
-from app.modules.catalog.service import LATE_CATALOG_FIELDS, LATE_WAYPOINT_FIELDS, content_hash, parse_catalog
+from app.modules.catalog.service import LATE_CATALOG_FIELDS, LATE_WAYPOINT_FIELDS, content_hash, pack_map_data, parse_catalog
 from app.modules.generation.mapping import danger_level, environment_code, suggested_metadata
 from app.shared.domain.errors import ValidationFailed
 from app.shared.domain.policies import permissions_of
@@ -324,3 +325,22 @@ def test_every_generation_needs_a_car_ego_from_its_snapshot() -> None:
     for code in (None, "vehicle.carlamotors.carlacola", "vehicle.unknown"):
         with pytest.raises(ValidationFailed):
             require_car_ego(snapshot, code)
+
+
+def test_opt_map_shares_the_stored_map_data_and_it_round_trips():
+    plain = parse_catalog(v2_document())  # Town10HD_Opt
+    opt = parse_catalog({**v2_document(), "map_name": "Town10HD"})
+    stored = [
+        pack_map_data(catalog.model_dump(mode="json", exclude_none=True)["waypoints"], catalog.opendrive_hash, catalog.opendrive_xml)
+        for catalog in (plain, opt)
+    ]
+    assert content_hash(plain) != content_hash(opt)
+    assert stored[0]["data_hash"] == stored[1]["data_hash"]
+    assert json.loads(gzip.decompress(stored[0]["waypoints_gz"])) == plain.model_dump(mode="json", exclude_none=True)["waypoints"]
+    assert gzip.decompress(stored[0]["opendrive_gz"]).decode() == plain.opendrive_xml
+
+
+def test_map_data_hash_changes_with_the_opendrive():
+    waypoints = [{"road_id": 1, "lane_id": -1, "s": 0.0}]
+    assert pack_map_data(waypoints, "a" * 64, None)["data_hash"] != pack_map_data(waypoints, "b" * 64, None)["data_hash"]
+    assert pack_map_data(waypoints, None, None)["opendrive_gz"] is None
