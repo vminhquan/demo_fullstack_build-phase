@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { api, ApiError, Grounding } from "@/lib/api";
 import { useSession } from "@/shared/auth/session-context";
 import { downloadBlob } from "@/shared/ui/components";
-import { ScenePreview } from "@/features/generation/scene-preview";
+import { hasPlacedEntities, ScenePreview } from "@/features/generation/scene-preview";
 
 type XoscEntity = { name: string; kind: string; model: string; x: number | null; y: number | null; heading: number | null; speed: number | null };
 type XoscEvent = { name: string; actor: string; action: string; condition: string };
@@ -182,7 +182,7 @@ export function XoscPreview({ caseId, fileName, grounding }: { caseId: number; f
               {data.author && <><dt>Tác giả</dt><dd>{data.author}</dd></>}
             </dl>
           </div>
-          {grounding ? <ScenePreview grounding={grounding} /> : <XoscPlot parsed={data} />}
+          {hasPlacedEntities(grounding) ? <ScenePreview grounding={grounding} /> : <XoscPlot parsed={data} />}
         </div>
       )}
       {data && (

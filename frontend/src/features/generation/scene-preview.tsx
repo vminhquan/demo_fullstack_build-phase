@@ -10,6 +10,13 @@ const ACTOR_COLORS: Record<string, string> = {
 
 type Point = { x: number; y: number };
 
+/** Only the old Agent's grounding places every entity; agent2 sends {map_name, site_id, ego: {blueprint}}. */
+export function hasPlacedEntities(grounding: Grounding | null | undefined): grounding is Grounding {
+  const placed = (entity: unknown) =>
+    !!entity && typeof (entity as PlacedEntity).x === "number" && typeof (entity as PlacedEntity).y === "number";
+  return !!grounding && placed(grounding.ego) && Array.isArray(grounding.actors) && grounding.actors.every(placed);
+}
+
 /** Top-down sketch in the ego frame (ego at the bottom, driving up). CARLA is left-handed: +y is to the right. */
 export function ScenePreview({ grounding }: { grounding: Grounding }) {
   const { ego } = grounding;
@@ -22,7 +29,7 @@ export function ScenePreview({ grounding }: { grounding: Grounding }) {
     return { x: dx * right.x + dy * right.y, y: -(dx * fwd.x + dy * fwd.y) };
   };
   const entities: PlacedEntity[] = [ego, ...grounding.actors];
-  const points = entities.flatMap((entity) => [entity, ...entity.preview_waypoints].map(toLocal));
+  const points = entities.flatMap((entity) => [entity, ...(entity.preview_waypoints ?? [])].map(toLocal));
   const minX = Math.min(-12, ...points.map((p) => p.x)) - 6;
   const maxX = Math.max(12, ...points.map((p) => p.x)) + 6;
   const minY = Math.min(...points.map((p) => p.y)) - 8;
@@ -35,7 +42,7 @@ export function ScenePreview({ grounding }: { grounding: Grounding }) {
       <svg viewBox={`${minX} ${minY} ${width} ${height}`} role="img" aria-label="Sơ đồ vị trí ego và các tác nhân trên bản đồ">
         <line x1={0} y1={maxY} x2={0} y2={minY} className="scene-axis" />
         {entities.map((entity) => {
-          const path = entity.preview_waypoints.map(toLocal);
+          const path = (entity.preview_waypoints ?? []).map(toLocal);
           if (path.length < 2) return null;
           return <polyline key={`${entity.entity_name}-path`} points={path.map((p) => `${p.x},${p.y}`).join(" ")} className="scene-path" stroke={entity === ego ? "var(--blue)" : ACTOR_COLORS[entity.actor_type] ?? "var(--muted)"} />;
         })}
