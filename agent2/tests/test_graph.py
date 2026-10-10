@@ -138,3 +138,18 @@ def test_prompt_llm_error_fails_all_selected_maps_before_site_search() -> None:
     result = generate(request(), BrokenLLM())
     assert result.status == "failed" and not result.scenarios
     assert result.map_failures[0].code == "LLM_EMPTY_RESPONSE"
+
+
+def test_weather_in_the_prompt_wins_over_the_picked_environment() -> None:
+    class RainLLM(FakeLLM):
+        def extract_constraints(self, prompt, *, tools=None, map_names=None, environments=None):
+            return PromptConstraints(weather_conditions=["rain"])
+
+    # The form picked "clear" (ClearNoon, sunny): merging it with the prompt's rain matched no preset before.
+    body = GenerationRequest(session_id="rain", prompt="xe máy tạt đầu ô tô trời mưa tầm tã", seed=3, target_count=1,
+                             selected_snapshots=[snapshot("Town01", 1)], weather_preset="ClearNoon", weather_conditions=["sunny"])
+    result = generate(body, RainLLM())
+    assert result.status == "completed"
+    assert result.scenarios[0].plan.environment.weather_preset == "HardRainNight"
+    # A prompt silent on weather keeps the picked one.
+    assert generate(body.model_copy(update={"session_id": "picked"}), FakeLLM()).scenarios[0].plan.environment.weather_preset == "ClearNoon"

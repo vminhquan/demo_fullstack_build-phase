@@ -95,6 +95,17 @@ def _preset(name: str) -> _Preset | None:
     return _Preset(name=name, conditions=frozenset(conditions), lighting=lighting, hour=hour) if conditions else None
 
 
+# Fixed shuffle of the matching presets, walked by seed: the Builder runs variant k with seed k, so consecutive
+# variants get different presets (all intensities and times of day) instead of rng.choice repeating some.
+PRESET_ORDER_SEED = 20261010
+
+
+def _rotated(presets: list[_Preset], position: int) -> _Preset:
+    order = sorted(presets, key=lambda item: item.name)
+    random.Random(PRESET_ORDER_SEED).shuffle(order)
+    return order[position % len(order)]
+
+
 def available_environments(snapshots: Sequence[SelectedSnapshot]) -> list[str]:
     """Weather/lighting combinations the selected CARLA catalogs have a preset for, e.g. "rain+wet, night"."""
     combos = {(tuple(sorted(item.conditions)), item.lighting)
@@ -210,7 +221,7 @@ def sample_variants(
             if len(variants) >= target_count:
                 break
             site = rng.choice(item.sites)
-            preset = rng.choice(item.presets)
+            preset = _rotated(item.presets, actual_seed + len(variants))
             actual_surface = surface or ("wet" if preset.conditions & {"rain", "wet"} else "dry")
             environment = EnvironmentSelection(
                 profile_id=f"carla_preset:{preset.name}",

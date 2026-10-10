@@ -97,16 +97,15 @@ def extract_constraints(state: GraphState, runtime: Runtime[GraphContext]) -> di
                        message="; ".join(constraints.unsupported_requirements))
             for item in runtime.context["selected_snapshots"]
         ]}
-    if request.weather_conditions:
-        constraints.weather_conditions = sorted(set(constraints.weather_conditions + request.weather_conditions))
-    if request.lighting is not None:
-        if constraints.lighting is not None and constraints.lighting != request.lighting:
-            return {"status": "failed", "map_failures": [
-                MapFailure(snapshot=item.ref, code="ENVIRONMENT_CONFLICT",
-                           message="Ánh sáng trong prompt mâu thuẫn lựa chọn môi trường.")
-                for item in runtime.context["selected_snapshots"]
-            ]}
+    # The prompt is the more specific ask: when it names weather, light or road surface, the environment picked
+    # in the form (often "any of these" ticks) is set aside instead of being merged into an impossible mix such
+    # as "mưa tầm tã" + clear. A prompt silent on the environment takes the picked one.
+    if constraints.weather_conditions or constraints.lighting or constraints.road_surface:
+        notes["use_request_environment"] = False
+    else:
+        constraints.weather_conditions = sorted(set(request.weather_conditions))
         constraints.lighting = request.lighting
+        notes["use_request_environment"] = True
     return {"constraints": constraints, **notes}
 
 
@@ -124,7 +123,8 @@ def sample_contexts(state: GraphState, runtime: Runtime[GraphContext]) -> dict:
     try:
         result = sample_variants(runtime.context["selected_snapshots"], state["sites"], state["constraints"],
                                  target_count=state["target_count"], seed=state["seed"],
-                                 ego_blueprint_id=request.ego_blueprint_id, weather_preset=request.weather_preset)
+                                 ego_blueprint_id=request.ego_blueprint_id,
+                                 weather_preset=request.weather_preset if state.get("use_request_environment", True) else None)
     except SamplingError as exc:
         failed_maps = {failure.snapshot.map_name for failure in state["map_failures"]}
         failures = [MapFailure(snapshot=item.ref, code=exc.code, message=str(exc))

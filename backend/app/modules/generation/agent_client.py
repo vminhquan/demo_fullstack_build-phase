@@ -81,6 +81,7 @@ class HttpAgentClient:
             "ego": {"road_type": road_type, "blueprint": plan["ego_blueprint_id"]},
             "actors": [{"actor_type": "motorcycle", "trigger": "lane_change", "blueprint": plan["motorcycle_blueprint_id"]}],
             "weather": weather_label, "time_of_day_hour": environment["time_of_day_hour"],
+            "weather_preset": environment.get("weather_preset"),
             "expected_outcome": {"expected_verdict": "UNKNOWN"},
         }
         return {

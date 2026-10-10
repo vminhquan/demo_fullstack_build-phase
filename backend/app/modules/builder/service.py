@@ -67,17 +67,20 @@ def variant_on(options: BuilderMapOptions, no: int, slot: int) -> Variant:
 
 
 def plan_variants(maps: list[BuilderMapOptions], target: int = TARGET_COUNT) -> list[Variant]:
-    """Variant i goes to map i mod len(maps); the k-th variant of a map takes the k-th ticked value of each category."""
-    return [variant_on(maps[index % len(maps)], index + 1, index // len(maps)) for index in range(target)]
+    """Variant i goes to map i mod len(maps) and takes the i-th ticked value of each category (cycling): with many
+    maps, a per-map count would give every variant the first ticked value and never cover the others."""
+    return [variant_on(maps[index % len(maps)], index + 1, index) for index in range(target)]
 
 
 # Agent failures that say the map itself cannot host the scenario (no cut-in site, none at the asked location such
-# as a four-way junction, or its CARLA data lacks the vehicles / weather asked for): the variant moves to another
+# as a four-way junction, or its CARLA data lacks a motorcycle): the variant moves to another
 # picked map instead of failing.
 MAP_UNFIT_CODES = {
     "NO_VERIFIED_SITES", "LOCATION_NOT_AVAILABLE", "SITE_INDEX_MISSING", "INSUFFICIENT_SITE_LENGTH",
-    "VEHICLE_NOT_AVAILABLE", "WEATHER_NOT_AVAILABLE",
+    "VEHICLE_NOT_AVAILABLE",
 }
+# Not WEATHER_NOT_AVAILABLE: it depends on the environment the variant was given, not on the map, and marking the
+# map unfit made every other variant (with other environments) skip it too.
 
 
 @dataclass
@@ -93,7 +96,7 @@ class MapRouting:
         for step in range(len(self.maps)):
             options = self.maps[(start + step) % len(self.maps)]
             if options.map_code not in self.unfit:
-                return variant if step == 0 else variant_on(options, variant.no, (variant.no - 1) // len(self.maps))
+                return variant if step == 0 else variant_on(options, variant.no, variant.no - 1)
         return None
 
     def unfit_summary(self) -> str:
@@ -243,7 +246,8 @@ async def run_variant(
                     map_code=variant.map_code,
                     ego_vehicle_code=variant.ego_vehicle_code or suggested.ego_vehicle_code,
                     adversary_type=variant.adversary_type or suggested.adversary_type,
-                    environment_code=variant.environment_code or suggested.environment_code,
+                    # What was generated: the Agent sets the picked environment aside when the prompt names its own.
+                    environment_code=suggested.environment_code or variant.environment_code,
                     danger_level=variant.danger_level or suggested.danger_level,
                     tag_names=builder.tag_names or suggested.tag_names,
                 ),

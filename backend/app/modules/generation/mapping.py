@@ -65,7 +65,8 @@ def suggested_metadata(result: dict[str, Any]) -> dict[str, Any]:
         "map_code": grounding.get("map_name") or ir.get("map_name"),
         "ego_vehicle_code": (grounding.get("ego") or {}).get("blueprint", "vehicle.tesla.model3"),
         "adversary_type": adversary_type(ir),
-        "environment_code": environment_code(ir),
+        # The CARLA preset actually used (also a selectable environment code), else the coarse weather label.
+        "environment_code": ir.get("weather_preset") or environment_code(ir),
         "danger_level": danger_level(result.get("threat_score") or {}, ir).value,
         "tag_names": [tag for tag in tags if tag],
     }

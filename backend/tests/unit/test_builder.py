@@ -16,11 +16,11 @@ def test_always_plans_ten_variants_spread_over_the_maps() -> None:
     assert sum(variant.map_code == "Town03" for variant in variants) == 4
 
 
-def test_ticked_values_cycle_per_map_and_empty_categories_stay_with_the_agent() -> None:
+def test_ticked_values_cycle_by_variant_and_empty_categories_stay_with_the_agent() -> None:
     maps = [BuilderMapOptions(map_code="Town03", environment_codes=["rain", "fog", "clear"], danger_levels=["HIGH"]),
             BuilderMapOptions(map_code="Town04")]
-    town03 = [variant for variant in plan_variants(maps) if variant.map_code == "Town03"]
-    assert [variant.environment_code for variant in town03] == ["rain", "fog", "clear", "rain", "fog"]
+    town03 = [variant for variant in plan_variants(maps) if variant.map_code == "Town03"]  # variants 1, 3, 5, 7, 9
+    assert [variant.environment_code for variant in town03] == ["rain", "clear", "fog", "rain", "clear"]
     assert {variant.danger_level for variant in town03} == {"HIGH"}
     assert all(variant.ego_vehicle_code is None and variant.adversary_type is None for variant in town03)
     town04 = [variant for variant in plan_variants(maps) if variant.map_code == "Town04"]
@@ -105,3 +105,10 @@ async def test_no_fitting_map_is_one_clear_error_and_other_failures_are_kept(mon
     monkeypatch.setattr(service, "run_variant", agent_down)
     await service.run_routed(1, None, None, None, plan_variants(maps)[0], service.MapRouting(maps))
     assert [item["code"] for item in recorded] == ["AGENT_UNAVAILABLE"]
+
+
+def test_many_maps_still_cover_every_ticked_environment() -> None:
+    ticked = ["clear", "rain", "heavy_rain", "fog", "night", "dusk", "HardRainNight", "ClearNoon", "WetSunset", "DustStorm"]
+    maps = [BuilderMapOptions(map_code=f"Town{index:02d}", environment_codes=ticked) for index in range(12)]
+    # One variant per map: before, every one took the first ticked value ("clear").
+    assert [variant.environment_code for variant in plan_variants(maps)] == ticked

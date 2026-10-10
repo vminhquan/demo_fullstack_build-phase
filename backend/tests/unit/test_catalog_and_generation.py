@@ -355,3 +355,10 @@ def test_reloading_the_map_in_carla_does_not_make_a_new_snapshot():
     assert content_hash(parse_catalog(first)) == content_hash(parse_catalog(again))
     again["traffic_lights"][0]["opendrive_id"] = "964"
     assert content_hash(parse_catalog(first)) != content_hash(parse_catalog(again))
+
+
+def test_suggested_environment_is_the_preset_the_agent_used():
+    ir = {"map_name": "Town03", "weather": "rain", "time_of_day_hour": 22, "weather_preset": "HardRainNight",
+          "ego": {"road_type": "urban_straight"}, "actors": [{"actor_type": "motorcycle", "trigger": "lane_change"}]}
+    assert suggested_metadata({"scenario_ir": ir})["environment_code"] == "HardRainNight"
+    assert suggested_metadata({"scenario_ir": {**ir, "weather_preset": None}})["environment_code"] != "HardRainNight"

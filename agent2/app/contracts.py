@@ -108,6 +108,8 @@ class GraphState(TypedDict):
     scenarios: NotRequired[list[GeneratedScenario]]
     map_failures: NotRequired[list[MapFailure]]
     clarification_questions: NotRequired[list[str]]
+    # False when the prompt named its own weather/light/surface, so the request's picked environment is ignored.
+    use_request_environment: NotRequired[bool]
     proposal_attempts: NotRequired[int]
     status: NotRequired[GenerationStatus]
 

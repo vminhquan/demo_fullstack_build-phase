@@ -114,3 +114,15 @@ def test_site_from_unselected_map_is_rejected() -> None:
     first, second = snapshot("Town01", 1), snapshot("Town03", 2)
     with pytest.raises(ValueError, match="not from a selected snapshot"):
         sample_variants([first], find_cut_in_sites([second]).sites, PromptConstraints(), target_count=1, seed=1)
+
+
+def test_consecutive_seeds_walk_through_different_presets() -> None:
+    names = ["ClearNoon", "ClearSunset", "ClearNight", "SoftRainNoon", "MidRainyNight", "HardRainSunset", "WetNoon", "CloudyNight"]
+    selected = snapshot("Town01", 1, presets=names)
+    sites = find_cut_in_sites([selected]).sites
+    picked = [sample_variants([selected], sites, PromptConstraints(), target_count=1, seed=seed).variants[0]
+              .context.environment.weather_preset for seed in range(1, 9)]
+    assert sorted(picked) == sorted(names)  # 8 variants, 8 presets, none repeated
+    rain = [sample_variants([selected], sites, PromptConstraints(weather_conditions=["rain"]), target_count=1, seed=seed)
+            .variants[0].context.environment.weather_preset for seed in range(1, 4)]
+    assert sorted(rain) == ["HardRainSunset", "MidRainyNight", "SoftRainNoon"]  # every rain intensity
