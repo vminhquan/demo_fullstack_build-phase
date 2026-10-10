@@ -87,3 +87,14 @@ def test_every_scenario_lasts_five_seconds_of_simulation() -> None:
     act_end = root.find("Storyboard/Story/Act/StopTrigger//SimulationTimeCondition").get("value")
     story_end = root.find("Storyboard/StopTrigger/ConditionGroup/Condition/ByValueCondition/SimulationTimeCondition").get("value")
     assert act_end == story_end == "5"
+
+
+def test_an_event_at_the_end_keeps_scenario_runner_from_stopping_after_the_lane_change() -> None:
+    proposed = plan()
+    root = ET.fromstring(render_xosc(proposed, variant(), snapshot("Town01", 1))[0])
+    groups = root.findall("Storyboard/Story/Act/ManeuverGroup")
+    assert [group.get("name") for group in groups] == ["MotorcycleManeuver", "Timeline"]
+    hold = groups[1].find("Maneuver/Event")
+    assert hold.find("StartTrigger//SimulationTimeCondition").get("value") == "5"
+    assert hold.find(".//AbsoluteTargetSpeed").get("value") == root.find(
+        ".//Private[@entityRef='hero']//AbsoluteTargetSpeed").get("value")

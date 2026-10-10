@@ -142,7 +142,8 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     - ScenarioRunner ignores the Storyboard StopTrigger except its criteria_* conditions (open_scenario.py:581);
       only an Act StopTrigger ends the scenario (open_scenario.py:492). Every Act without one gets the
       Storyboard's SimulationTimeCondition (else END_AFTER_S), otherwise a maneuver that never completes
-      runs until the Bridge timeout.
+      runs until the Bridge timeout. An Act also ends once its maneuvers are done, so each gets an event at its
+      stop time that holds it open until then.
     - An Init RoutingAction keeps ScenarioRunner's init behavior RUNNING until the actor reaches the last waypoint,
       and the scenario cannot end before that (the "behavior" Parallel is SUCCESS_ON_ALL, open_scenario.py:513).
       Such routes move into the first Act as an event starting at once, so the Act StopTrigger cancels them.
@@ -174,12 +175,12 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
                 _insert_route_event(first_act, private.get("entityRef", ""), action)
 
     for act in storyboard.iter("Act"):
-        if act.find("StopTrigger") is not None:
-            continue
-        # OpenSCENARIO 1.0: Act = ManeuverGroup+, StartTrigger, StopTrigger? (StopTrigger comes last).
-        cond = ET.SubElement(ET.SubElement(ET.SubElement(act, "StopTrigger"), "ConditionGroup"), "Condition",
-                             {"name": "ActEndAfterTime", "delay": "0", "conditionEdge": "rising"})
-        ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "SimulationTimeCondition", {"value": end_after, "rule": "greaterThan"})
+        if act.find("StopTrigger") is None:
+            # OpenSCENARIO 1.0: Act = ManeuverGroup+, StartTrigger, StopTrigger? (StopTrigger comes last).
+            cond = ET.SubElement(ET.SubElement(ET.SubElement(act, "StopTrigger"), "ConditionGroup"), "Condition",
+                                 {"name": "ActEndAfterTime", "delay": "0", "conditionEdge": "rising"})
+            ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "SimulationTimeCondition", {"value": end_after, "rule": "greaterThan"})
+        _hold_until_stop(root, act)
 
     existing = {cond.get("name") for cond in trigger.iter("Condition")}
     missing = [name for name in names if f"criteria_{name}" not in existing]
@@ -190,6 +191,37 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
             ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "ParameterCondition", {"parameterRef": "", "value": "", "rule": "lessThan"})
     ET.indent(root)
     return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
+
+
+def _hold_until_stop(root: ET.Element, act: ET.Element) -> None:
+    """ScenarioRunner ends an Act once its maneuver groups are done, before the Act StopTrigger: a cut-in stopped
+    as soon as the motorcycle changed lanes. A group whose event starts at the stop time keeps the Act running;
+    its action re-sets the ego's initial speed (no effect)."""
+    stop = act.find("StopTrigger")
+    seconds = next((item.get("value") for item in stop.iter("SimulationTimeCondition") if item.get("value")), None) if stop is not None else None
+    if seconds is None or any(event.get("name") == "HoldUntilEnd" for event in act.iter("Event")):
+        return
+    names = [item.get("name", "") for item in root.findall("Entities/ScenarioObject")]
+    ego = next((name for name in names if name.lower() in ("hero", "ego", "ego_vehicle")), names[0] if names else None)
+    if ego is None:
+        return
+    speed = next((node.get("value") for private in root.findall("Storyboard/Init/Actions/Private")
+                  if private.get("entityRef") == ego for node in private.iter("AbsoluteTargetSpeed")), "0")
+    group = ET.Element("ManeuverGroup", {"name": "Timeline", "maximumExecutionCount": "1"})
+    ET.SubElement(ET.SubElement(group, "Actors", {"selectTriggeringEntities": "false"}), "EntityRef", {"entityRef": ego})
+    event = ET.SubElement(ET.SubElement(group, "Maneuver", {"name": "HoldUntilEnd"}), "Event",
+                          {"name": "HoldUntilEnd", "priority": "parallel"})
+    speed_action = ET.SubElement(ET.SubElement(ET.SubElement(ET.SubElement(event, "Action", {"name": "KeepEgoSpeed"}),
+                                                             "PrivateAction"), "LongitudinalAction"), "SpeedAction")
+    ET.SubElement(speed_action, "SpeedActionDynamics", {"dynamicsShape": "step", "value": "0", "dynamicsDimension": "time"})
+    ET.SubElement(ET.SubElement(speed_action, "SpeedActionTarget"), "AbsoluteTargetSpeed", {"value": speed})
+    start = ET.SubElement(ET.SubElement(ET.SubElement(event, "StartTrigger"), "ConditionGroup"), "Condition",
+                          {"name": "ScenarioEnd", "delay": "0", "conditionEdge": "rising"})
+    ET.SubElement(ET.SubElement(start, "ByValueCondition"), "SimulationTimeCondition", {"value": seconds, "rule": "greaterThan"})
+    # ManeuverGroups come before the Act's StartTrigger.
+    children = list(act)
+    position = next((index for index, child in enumerate(children) if child.tag == "StartTrigger"), len(children))
+    act.insert(position, group)
 
 
 def _ensure_ego(root: ET.Element) -> None:

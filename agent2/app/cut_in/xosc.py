@@ -127,6 +127,21 @@ def _environment(parent: ET.Element, plan: CutInPlan) -> None:
     })
 
 
+def _hold_until(act: ET.Element, entity: str, seconds: float, speed_mps: float) -> None:
+    """ScenarioRunner ends an Act as soon as its maneuver groups are done, before the Act StopTrigger: this group's
+    event only starts at `seconds`, so the scenario lasts that long. Its action re-sets the ego's own speed (no effect)."""
+    group = ET.SubElement(act, "ManeuverGroup", {"name": "Timeline", "maximumExecutionCount": "1"})
+    ET.SubElement(ET.SubElement(group, "Actors", {"selectTriggeringEntities": "false"}), "EntityRef", {"entityRef": entity})
+    event = ET.SubElement(ET.SubElement(group, "Maneuver", {"name": "HoldUntilEnd"}), "Event",
+                          {"name": "HoldUntilEnd", "priority": "parallel"})
+    action = ET.SubElement(ET.SubElement(ET.SubElement(event, "Action", {"name": "KeepEgoSpeed"}), "PrivateAction"),
+                           "LongitudinalAction")
+    speed = ET.SubElement(action, "SpeedAction")
+    ET.SubElement(speed, "SpeedActionDynamics", {"dynamicsShape": "step", "value": "0", "dynamicsDimension": "time"})
+    ET.SubElement(ET.SubElement(speed, "SpeedActionTarget"), "AbsoluteTargetSpeed", {"value": _number(speed_mps)})
+    _trigger(ET.SubElement(event, "StartTrigger"), "ScenarioEnd", seconds)
+
+
 def render_xosc(plan: CutInPlan, variant: SampledVariant, snapshot: SelectedSnapshot) -> tuple[str, str]:
     """Return (XML, SHA-256) after validating the locked catalog and plan."""
 
@@ -176,6 +191,7 @@ def render_xosc(plan: CutInPlan, variant: SampledVariant, snapshot: SelectedSnap
         "entityRef": EGO, "value": "1" if site.target_side == "left" else "-1",
     })
     _trigger(ET.SubElement(event, "StartTrigger"), "StartLaneChange", plan.trigger_time_s)
+    _hold_until(act, EGO, SCENARIO_DURATION_S, plan.ego_speed_kmh / 3.6)
     _trigger(ET.SubElement(act, "StartTrigger"), "StartAct", 0)
     # Fixed length; validation keeps the lane change ending at least MIN_OBSERVE_S before it.
     end_time = SCENARIO_DURATION_S

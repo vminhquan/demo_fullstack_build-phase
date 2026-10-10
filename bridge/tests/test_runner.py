@@ -235,3 +235,24 @@ def test_prepare_xosc_marks_the_hero_as_scenario_runner_ego() -> None:
     assert types == {"Ego": "ego_vehicle", "Motorcycle": "motorcycle"}
     # A file that already names its ego is left alone.
     assert runner.prepare_xosc(runner.prepare_xosc(xosc)).count('value="ego_vehicle"') == 1
+
+
+def test_prepare_xosc_holds_the_act_open_until_its_stop_time() -> None:
+    xosc = """<OpenSCENARIO><Entities><ScenarioObject name="Ego"><Vehicle name="vehicle.audi.a2" vehicleCategory="car"/></ScenarioObject>
+      <ScenarioObject name="Motorcycle"><Vehicle name="vehicle.yamaha.yzf" vehicleCategory="motorbike"/></ScenarioObject></Entities>
+      <Storyboard><Init><Actions><Private entityRef="Ego"><PrivateAction><LongitudinalAction><SpeedAction>
+        <SpeedActionDynamics dynamicsShape="step" value="0" dynamicsDimension="time"/>
+        <SpeedActionTarget><AbsoluteTargetSpeed value="10.5"/></SpeedActionTarget></SpeedAction></LongitudinalAction></PrivateAction></Private>
+      </Actions></Init>
+      <Story name="S"><Act name="A"><ManeuverGroup name="MotorcycleManeuver" maximumExecutionCount="1"/>
+        <StartTrigger/><StopTrigger><ConditionGroup><Condition name="EndAct" delay="0" conditionEdge="rising">
+          <ByValueCondition><SimulationTimeCondition value="5.6" rule="greaterThan"/></ByValueCondition></Condition></ConditionGroup></StopTrigger>
+      </Act></Story><StopTrigger/></Storyboard></OpenSCENARIO>"""
+    once = runner.prepare_xosc(xosc)
+    act = ET.fromstring(once).find("Storyboard/Story/Act")
+    assert [child.tag for child in act] == ["ManeuverGroup", "ManeuverGroup", "StartTrigger", "StopTrigger"]
+    hold = act.findall("ManeuverGroup")[1]
+    assert hold.find(".//EntityRef").get("entityRef") == "Ego"
+    assert hold.find(".//SimulationTimeCondition").get("value") == "5.6"
+    assert hold.find(".//AbsoluteTargetSpeed").get("value") == "10.5"
+    assert runner.prepare_xosc(once).count("HoldUntilEnd") == once.count("HoldUntilEnd")  # added once
