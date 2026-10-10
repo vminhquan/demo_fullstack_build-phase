@@ -9,10 +9,14 @@ from app.cut_in.sample import SampledVariant
 EXTRACT_SYSTEM = """Bạn trích ràng buộc cho DUY NHẤT tình huống xe máy tạt đầu ô tô.
 Cùng tình huống này: tạt đầu, cắt đầu, cắt ngang đầu xe, chen/lấn vào làn phía trước ô tô, cut-in.
 Chỉ ghi điều kiện được người dùng nói rõ. Thiếu thông tin thì để null hoặc danh sách rỗng; hệ thống sẽ chọn ngẫu nhiên sau.
-location_tags chỉ dùng: straight, curve, junction, junction_approach, intersection_4way.
-"ngã tư" phải là intersection_4way; junction không chứng minh là ngã tư.
-weather_conditions chỉ dùng: sunny, rain, cloudy, wet, dust, fog. Các điều kiện trong danh sách phải cùng xuất hiện.
-lighting chỉ dùng day, night, sunset; road_surface chỉ dùng dry, wet, slippery.
+location_tags: "đường thẳng" -> straight; "khúc cua", "đường cong" -> curve; "trong giao lộ" -> junction;
+"gần/trước giao lộ", "sắp vào ngã ba" -> junction_approach; "ngã tư" -> intersection_4way.
+junction không chứng minh là ngã tư. "Cao tốc", "đô thị", "trong phố", "đường lớn" thì bỏ qua: không ghi vào
+location_tags và cũng không ghi vào unsupported_requirements (hệ thống chọn đoạn đường có sẵn).
+weather_conditions: "nắng", "trời quang" -> sunny; "mưa" -> rain; "nhiều mây", "âm u" -> cloudy; "đường ướt" -> wet;
+"bão bụi" -> dust; "sương mù" -> fog. Các điều kiện trong danh sách phải cùng xuất hiện.
+lighting: "ban ngày", "buổi trưa" -> day; "ban đêm", "tối" -> night; "hoàng hôn", "chiều tối" -> sunset.
+road_surface: "khô" -> dry; "ướt" -> wet; "trơn" -> slippery.
 Tốc độ trả theo km/h. Nếu không rõ tốc độ thuộc xe nào hoặc đơn vị là gì, ghi vào ambiguities.
 Thiếu thông tin KHÔNG phải ambiguity: không nêu tốc độ, khoảng cách, thời điểm, thời tiết hay mặt đường là bình thường.
 ambiguities chỉ dành cho điều người dùng đã nói nhưng mâu thuẫn hoặc hiểu được theo nhiều cách.
@@ -22,7 +26,7 @@ Chỉ ghi tình huống khác vào unsupported_requirements khi prompt NÊU RÕ 
 (người đi bộ, xe đạp, xe tải tạt đầu, vượt đèn đỏ, va chạm từ phía sau...).
 Prompt ngắn, không nêu loại xe hoặc chỉ nói "tạt đầu"/"cắt ngang đầu xe" vẫn là xe máy tạt đầu ô tô.
 Đừng tự thêm điều kiện địa điểm, thời tiết, tốc độ hoặc tọa độ.
-Ví dụ: "Xe máy tạt đầu ô tô trên đường", "tạt đầu", "xe máy cắt ngang đầu xe ô tô"
+Ví dụ: "Xe máy tạt đầu ô tô trên đường", "tạt đầu", "xe máy cắt ngang đầu xe ô tô", "tạt đầu trên cao tốc"
 -> mọi trường null hoặc rỗng, ambiguities=[], unsupported_requirements=[].
 Ví dụ: "Xe máy tạt đầu ô tô khi trời có tuyết" -> unsupported_requirements=[{"quote": "trời có tuyết", "reason": "tuyết ngoài miền hỗ trợ"}]."""
 
@@ -52,9 +56,21 @@ PROPOSE_TOOLS = {
 }
 
 
-def extraction_messages(prompt: str, map_names: list[str] | None = None) -> list[dict[str, str]]:
-    system = EXTRACT_SYSTEM if not map_names else f"{EXTRACT_SYSTEM}\n{EXTRACT_TOOLS.format(maps=', '.join(map_names))}"
-    return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
+# Information only: whether CARLA has a preset for the asked weather is checked by code (WEATHER_NOT_AVAILABLE).
+# Asked to judge it, the model also blocked conditions it had just extracted correctly ("trời âm u").
+EXTRACT_ENVIRONMENTS = """Để tham khảo, CARLA của người dùng có các tổ hợp thời tiết, ánh sáng: {environments}.
+Vẫn chỉ trích điều người dùng nói vào các trường; không dùng danh sách này để chặn yêu cầu."""
+
+
+def extraction_messages(
+    prompt: str, map_names: list[str] | None = None, environments: list[str] | None = None,
+) -> list[dict[str, str]]:
+    parts = [EXTRACT_SYSTEM]
+    if environments:
+        parts.append(EXTRACT_ENVIRONMENTS.format(environments="; ".join(environments)))
+    if map_names:
+        parts.append(EXTRACT_TOOLS.format(maps=", ".join(map_names)))
+    return [{"role": "system", "content": "\n".join(parts)}, {"role": "user", "content": prompt}]
 
 
 def proposal_messages(

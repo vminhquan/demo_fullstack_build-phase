@@ -21,7 +21,7 @@ from app.contracts import (
     MapFailure,
 )
 from app.cut_in.model import CutInPlan, PromptConstraints, ValidationResult
-from app.cut_in.sample import SampledVariant, SamplingError, sample_variants
+from app.cut_in.sample import SampledVariant, SamplingError, available_environments, sample_variants
 from app.cut_in.validate import repair_maneuver, validate_cut_in
 from app.cut_in.xosc import XoscExportError, render_xosc
 from app.llm.client import LLMCallError
@@ -35,6 +35,7 @@ class GeneratorLLM(Protocol):
 
     def extract_constraints(
         self, prompt: str, *, tools: Toolbox | None = None, map_names: list[str] | None = None,
+        environments: list[str] | None = None,
     ) -> PromptConstraints: ...
 
     def propose_maneuver(
@@ -80,6 +81,7 @@ def extract_constraints(state: GraphState, runtime: Runtime[GraphContext]) -> di
     try:
         constraints = _llm(runtime).extract_constraints(
             state["prompt"], tools=tools, map_names=[ref.map_name for ref in refs],
+            environments=available_environments(runtime.context["selected_snapshots"]),
         ).model_copy(deep=True)
     except LLMCallError as exc:
         return {"status": "failed", "map_failures": [

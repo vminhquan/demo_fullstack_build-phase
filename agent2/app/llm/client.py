@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from typing import Any, Literal
 
 from app.config import Settings, get_settings
 from app.cut_in.model import CutInPlan, PromptConstraints
@@ -31,13 +32,39 @@ def _words(text: str) -> str:
     return " ".join(text.lower().split())
 
 
-class _PromptExtraction(BaseModel):
-    """All fields required for the API's strict JSON schema; null means absent."""
+# Kinds of road the cut-in sites do not encode: the run picks any verified site instead of refusing the prompt
+# (gpt-4o-mini kept listing "cao tốc" as unsupported even when told to ignore it).
+ROAD_KIND_WORDS = re.compile(r"cao tốc|xa lộ|quốc lộ|đường lớn|đô thị|nội thành|ngoại ô|trong phố|thành phố|nông thôn")
 
-    location_tags: list[str]
-    weather_conditions: list[str]
-    lighting: str | None
-    road_surface: str | None
+
+# Vietnamese words for values the extraction fields can hold. A blocked quote naming a value the model also put in
+# a field is the model contradicting itself ("trời âm u" blocked next to weather=cloudy); whether CARLA has a
+# preset for it is the sampler's call (WEATHER_NOT_AVAILABLE), not the model's.
+FIELD_TERMS = {
+    "nắng": "sunny", "quang": "sunny", "mưa": "rain", "mây": "cloudy", "âm u": "cloudy", "ướt": "wet", "bụi": "dust",
+    "sương": "fog", "đêm": "night", "tối": "night", "hoàng hôn": "sunset", "chiều": "sunset", "ban ngày": "day",
+    "trưa": "day", "trơn": "slippery", "khô": "dry",
+}
+
+
+def _blocks(quote: str, prompt: str, extracted: set[str]) -> bool:
+    """An unsupported requirement only counts when quoted from the prompt, not just a kind of road, and not a
+    condition the model extracted into a field."""
+    text = _words(quote)
+    if not text or text not in _words(prompt) or ROAD_KIND_WORDS.search(text):
+        return False
+    return not any(term in text and value in extracted for term, value in FIELD_TERMS.items())
+
+
+class _PromptExtraction(BaseModel):
+    """All fields required for the API's strict JSON schema; null means absent.
+
+    Closed vocabularies are enums in that schema, so the model cannot answer a value the sampler would reject."""
+
+    location_tags: list[Literal["straight", "curve", "junction", "junction_approach", "intersection_4way"]]
+    weather_conditions: list[Literal["sunny", "rain", "cloudy", "wet", "dust", "fog"]]
+    lighting: Literal["day", "night", "sunset"] | None
+    road_surface: Literal["dry", "wet", "slippery"] | None
     ego_speed_kmh: float | None
     motorcycle_speed_kmh: float | None
     ambiguities: list[str] = Field(
@@ -111,14 +138,19 @@ class OpenAILLM:
         except ValidationError as exc:
             raise LLMCallError("LLM_UNPARSEABLE_RESPONSE", "OpenAI trả dữ liệu không hợp lệ theo schema.") from exc
 
-    def extract_constraints(self, prompt: str, *, tools: Toolbox | None = None, map_names: list[str] | None = None) -> PromptConstraints:
+    def extract_constraints(
+        self, prompt: str, *, tools: Toolbox | None = None, map_names: list[str] | None = None,
+        environments: list[str] | None = None,
+    ) -> PromptConstraints:
         if not prompt.strip():
             raise ValueError("prompt must not be empty")
-        parsed = self._parse(extraction_messages(prompt, map_names if tools else None), _PromptExtraction, tools)
+        messages = extraction_messages(prompt, map_names if tools else None, environments)
+        parsed = self._parse(messages, _PromptExtraction, tools)
         # A requirement only blocks when the model quotes where the user asked for it; "nothing was said about X"
         # has no quote, so missing details are sampled instead of rejected.
+        extracted = {*parsed.weather_conditions, parsed.lighting, parsed.road_surface}
         unsupported = [f'"{item.quote.strip()}": {item.reason}' for item in parsed.unsupported_requirements
-                       if item.quote.strip() and _words(item.quote) in _words(prompt)]
+                       if _blocks(item.quote, prompt, extracted)]
         try:
             return PromptConstraints.model_validate({**parsed.model_dump(), "unsupported_requirements": unsupported})
         except ValidationError as exc:

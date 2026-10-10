@@ -112,7 +112,7 @@ def test_graph_hands_tools_to_both_llm_steps():
         def __init__(self):
             self.seen = {}
 
-        def extract_constraints(self, prompt, *, tools=None, map_names=None):
+        def extract_constraints(self, prompt, *, tools=None, map_names=None, environments=None):
             self.seen["extract"] = (type(tools).__name__, map_names)
             return super().extract_constraints(prompt)
 

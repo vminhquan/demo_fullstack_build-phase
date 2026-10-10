@@ -95,6 +95,13 @@ def _preset(name: str) -> _Preset | None:
     return _Preset(name=name, conditions=frozenset(conditions), lighting=lighting, hour=hour) if conditions else None
 
 
+def available_environments(snapshots: Sequence[SelectedSnapshot]) -> list[str]:
+    """Weather/lighting combinations the selected CARLA catalogs have a preset for, e.g. "rain+wet, night"."""
+    combos = {(tuple(sorted(item.conditions)), item.lighting)
+              for snapshot in snapshots for name in snapshot.catalog.weather_presets if (item := _preset(name))}
+    return [f"{'+'.join(conditions)}, {lighting}" for conditions, lighting in sorted(combos)]
+
+
 def is_motorcycle_blueprint(blueprint: Blueprint) -> bool:
     base_type = (blueprint.base_type or "").lower()
     if base_type:
@@ -189,8 +196,9 @@ def sample_variants(
         if weather_preset is not None:
             presets = [item for item in presets if item.name == weather_preset]
         if not presets:
+            asked = ", ".join([*sorted(required_weather), *([lighting] if lighting else []), *([surface] if surface else [])])
             failures.append(MapFailure(snapshot=snapshot.ref, code="WEATHER_NOT_AVAILABLE",
-                                       message="Catalog của map không có weather preset phù hợp điều kiện đã yêu cầu."))
+                                       message=f"CARLA không có weather preset cho: {asked or weather_preset}."))
             continue
         eligible.append(_EligibleMap(snapshot, map_sites, cars, motorcycles, presets))
 

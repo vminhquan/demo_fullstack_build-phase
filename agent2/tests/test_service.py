@@ -11,7 +11,7 @@ from test_sample import snapshot
 class FakeLLM:
     model_name = "test-llm"
 
-    def extract_constraints(self, prompt: str, *, tools=None, map_names=None) -> PromptConstraints:
+    def extract_constraints(self, prompt: str, *, tools=None, map_names=None, environments=None) -> PromptConstraints:
         return PromptConstraints(ego_speed_kmh=37, motorcycle_speed_kmh=43)
 
     def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None) -> CutInPlan:

@@ -144,3 +144,40 @@ def test_only_quoted_requirements_block_and_missing_details_do_not() -> None:
     llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
     constraints = llm.extract_constraints("Xe máy tạt đầu ô tô khi trời có tuyết")
     assert constraints.unsupported_requirements == ['"trời  có TUYẾT": tuyết ngoài miền hỗ trợ']
+
+
+def test_extraction_is_told_what_this_carla_can_build_and_answers_from_closed_lists() -> None:
+    from app.cut_in.sample import available_environments
+    from app.llm.client import _PromptExtraction
+    from app.llm.prompts import extraction_messages
+
+    environments = available_environments([snapshot("Town01", 1, presets=["ClearNoon", "HardRainNight", "Default"])])
+    assert environments == ["rain, night", "sunny, day"]
+    system = extraction_messages("Xe máy tạt đầu ô tô", environments=environments)[0]["content"]
+    assert "rain, night; sunny, day" in system and "search_cut_in_sites" not in system
+    schema = _PromptExtraction.model_json_schema()["properties"]
+    assert schema["location_tags"]["items"]["enum"][-1] == "intersection_4way"
+    assert {"enum": ["day", "night", "sunset"], "type": "string"} in schema["lighting"]["anyOf"]
+
+
+def test_a_kind_of_road_never_blocks_the_prompt() -> None:
+    reply = {
+        "location_tags": [], "weather_conditions": ["cloudy"], "lighting": None, "road_surface": None,
+        "ego_speed_kmh": None, "motorcycle_speed_kmh": None, "ambiguities": [],
+        "unsupported_requirements": [{"quote": "trên cao tốc", "reason": "cao tốc ngoài miền hỗ trợ"}],
+    }
+    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
+    constraints = llm.extract_constraints("xe máy tạt đầu ô tô trên cao tốc trời âm u")
+    assert constraints.unsupported_requirements == [] and constraints.weather_conditions == ["cloudy"]
+
+
+def test_a_condition_the_model_extracted_is_not_also_blocked() -> None:
+    reply = {
+        "location_tags": [], "weather_conditions": ["cloudy"], "lighting": None, "road_surface": None,
+        "ego_speed_kmh": None, "motorcycle_speed_kmh": None, "ambiguities": [],
+        "unsupported_requirements": [{"quote": "trời âm u", "reason": "âm u ngoài miền hỗ trợ"},
+                                     {"quote": "có tuyết", "reason": "tuyết ngoài miền hỗ trợ"}],
+    }
+    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
+    constraints = llm.extract_constraints("xe máy tạt đầu ô tô trời âm u có tuyết")
+    assert constraints.unsupported_requirements == ['"có tuyết": tuyết ngoài miền hỗ trợ']

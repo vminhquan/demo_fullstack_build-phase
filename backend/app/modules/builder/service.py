@@ -71,9 +71,13 @@ def plan_variants(maps: list[BuilderMapOptions], target: int = TARGET_COUNT) -> 
     return [variant_on(maps[index % len(maps)], index + 1, index // len(maps)) for index in range(target)]
 
 
-# Agent failures that say the map itself cannot host the scenario (no cut-in site, or none at the asked
-# location such as a four-way junction): the variant moves to another picked map instead of failing.
-MAP_UNFIT_CODES = {"NO_VERIFIED_SITES", "LOCATION_NOT_AVAILABLE", "SITE_INDEX_MISSING", "INSUFFICIENT_SITE_LENGTH"}
+# Agent failures that say the map itself cannot host the scenario (no cut-in site, none at the asked location such
+# as a four-way junction, or its CARLA data lacks the vehicles / weather asked for): the variant moves to another
+# picked map instead of failing.
+MAP_UNFIT_CODES = {
+    "NO_VERIFIED_SITES", "LOCATION_NOT_AVAILABLE", "SITE_INDEX_MISSING", "INSUFFICIENT_SITE_LENGTH",
+    "VEHICLE_NOT_AVAILABLE", "WEATHER_NOT_AVAILABLE",
+}
 
 
 @dataclass

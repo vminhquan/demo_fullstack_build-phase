@@ -91,7 +91,7 @@ def test_graph_covers_selected_maps_and_keeps_catalog_out_of_state() -> None:
 
 def test_unclear_prompt_still_generates_and_keeps_the_note() -> None:
     class AmbiguousLLM(FakeLLM):
-        def extract_constraints(self, prompt, *, tools=None, map_names=None):
+        def extract_constraints(self, prompt, *, tools=None, map_names=None, environments=None):
             return PromptConstraints(ambiguities=["Tốc độ này thuộc xe nào?"])
 
     result = generate(request(), AmbiguousLLM())
@@ -132,7 +132,7 @@ def test_failure_on_one_map_keeps_valid_scenario_from_other_map() -> None:
 
 def test_prompt_llm_error_fails_all_selected_maps_before_site_search() -> None:
     class BrokenLLM(FakeLLM):
-        def extract_constraints(self, prompt, *, tools=None, map_names=None):
+        def extract_constraints(self, prompt, *, tools=None, map_names=None, environments=None):
             raise LLMCallError("LLM_EMPTY_RESPONSE", "Không có dữ liệu.")
 
     result = generate(request(), BrokenLLM())
