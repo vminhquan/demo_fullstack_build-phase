@@ -95,3 +95,15 @@ def test_repair_finds_passing_numbers_or_reports_that_none_fit() -> None:
     # 250 km/h leaves the 65 m corridor before any lane change can finish: nothing to repair.
     too_fast = CutInPlan.model_validate({**base, "motorcycle_start_offset_m": 5, "ego_speed_kmh": 250})
     assert repair_maneuver(too_fast, sampled.model_copy(update={"context": sampled.context.model_copy(update={"ego_speed_kmh": 250})})) is None
+
+
+def test_lane_change_must_end_a_second_before_the_five_second_scenario() -> None:
+    sampled, selected = variant(), snapshot("Town01", 1)
+    late = CutInPlan.model_validate({**sampled.context.model_dump(), "motorcycle_start_offset_m": 10,
+                                     "trigger_time_s": 3.0, "lane_change_duration_s": 2.0, "desired_lead_gap_m": 5})
+    issues = validate_cut_in(late, sampled, selected).issues
+    assert [issue.code for issue in issues if issue.code == "CUT_IN_TOO_LATE"] == ["CUT_IN_TOO_LATE"]
+    assert all(issue.recoverable for issue in issues)
+    repaired = repair_maneuver(late, sampled)
+    assert repaired is not None and repaired.trigger_time_s + repaired.lane_change_duration_s <= 4.0
+    assert validate_cut_in(repaired, sampled, selected).valid

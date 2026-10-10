@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from app.catalog.models import SelectedSnapshot
 from app.cut_in.model import CutInPlan
 from app.cut_in.sample import SampledVariant
-from app.cut_in.validate import validate_cut_in
+from app.cut_in.validate import SCENARIO_DURATION_S, validate_cut_in
 
 
 class XoscExportError(ValueError):
@@ -40,9 +40,6 @@ def _trigger(parent: ET.Element, name: str, seconds: float) -> None:
 # tools, and the Bridge's follow camera, look for as the ego.
 EGO = "hero"
 MOTORCYCLE = "Motorcycle"
-# Seconds the scenario keeps running after the lane change ends, so the outcome (collision, braking) is seen
-# and judged instead of stopping as the motorcycle reaches the ego lane.
-OBSERVE_AFTER_S = 4.0
 
 # ScenarioRunner turns storyboard stop conditions named criteria_* into its test criteria; without any it prints
 # "Nothing to analyze" and writes no --json report. Kept in their own ConditionGroup (groups are OR-ed), so they
@@ -180,7 +177,8 @@ def render_xosc(plan: CutInPlan, variant: SampledVariant, snapshot: SelectedSnap
     })
     _trigger(ET.SubElement(event, "StartTrigger"), "StartLaneChange", plan.trigger_time_s)
     _trigger(ET.SubElement(act, "StartTrigger"), "StartAct", 0)
-    end_time = plan.trigger_time_s + plan.lane_change_duration_s + OBSERVE_AFTER_S
+    # Fixed length; validation keeps the lane change ending at least MIN_OBSERVE_S before it.
+    end_time = SCENARIO_DURATION_S
     _trigger(ET.SubElement(act, "StopTrigger"), "EndAct", end_time)
     stop = ET.SubElement(storyboard, "StopTrigger")
     _trigger(stop, "EndScenario", end_time)

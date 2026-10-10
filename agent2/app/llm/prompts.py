@@ -38,7 +38,7 @@ motorcycle_start_offset_m là độ lệch dọc so với ô tô lúc bắt đ�
 trigger_time_s >= 0; lane_change_duration_s > 0; desired_lead_gap_m > 0.
 Chọn số phù hợp với available_length_m, hai tốc độ và mục tiêu xe máy nhập làn phía trước ô tô.
 Hệ thống kiểm tra đúng các điều kiện sau (v = km/h / 3.6, t = trigger_time_s + lane_change_duration_s, L = available_length_m - 5):
-0 <= motorcycle_start_offset_m <= L; lane_change_duration_s >= 1.6;
+0 <= motorcycle_start_offset_m <= L; lane_change_duration_s >= 1.6; t <= 4 (kịch bản chỉ dài 5 s);
 v_ô_tô * t <= L; motorcycle_start_offset_m + v_xe_máy * t <= L;
 motorcycle_start_offset_m + (v_xe_máy - v_ô_tô) * t >= desired_lead_gap_m + 4.
 Nếu xe máy chậm hơn ô tô, cho xe máy xuất phát phía trước đủ xa và trigger_time_s nhỏ.

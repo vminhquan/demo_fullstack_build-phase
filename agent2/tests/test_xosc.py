@@ -82,8 +82,8 @@ def test_scenario_runner_recognises_the_ego() -> None:
     assert types == {"hero": "ego_vehicle", "Motorcycle": "simulation"}
 
 
-def test_scenario_keeps_running_after_the_cut_in_to_judge_it() -> None:
-    proposed = plan()
-    root = ET.fromstring(render_xosc(proposed, variant(), snapshot("Town01", 1))[0])
-    end = root.find("Storyboard/Story/Act/StopTrigger//SimulationTimeCondition").get("value")
-    assert float(end) == proposed.trigger_time_s + proposed.lane_change_duration_s + 4.0
+def test_every_scenario_lasts_five_seconds_of_simulation() -> None:
+    root = ET.fromstring(render_xosc(plan(), variant(), snapshot("Town01", 1))[0])
+    act_end = root.find("Storyboard/Story/Act/StopTrigger//SimulationTimeCondition").get("value")
+    story_end = root.find("Storyboard/StopTrigger/ConditionGroup/Condition/ByValueCondition/SimulationTimeCondition").get("value")
+    assert act_end == story_end == "5"

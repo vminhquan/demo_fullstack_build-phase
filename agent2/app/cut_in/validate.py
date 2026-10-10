@@ -17,6 +17,11 @@ MIN_CORRIDOR_M = 60.0
 END_BUFFER_M = 5.0
 VEHICLE_LENGTH_ALLOWANCE_M = 4.0
 MAX_LATERAL_SPEED_MPS = 2.5
+# Every scenario runs this long (simulation time); the lane change must end MIN_OBSERVE_S before, so the
+# outcome (collision or not) is seen and judged.
+SCENARIO_DURATION_S = 5.0
+MIN_OBSERVE_S = 1.0
+LATEST_COMPLETION_S = SCENARIO_DURATION_S - MIN_OBSERVE_S
 
 
 def _issue(code: str, message: str, field: str | None = None, *, recoverable: bool = False) -> ValidationIssue:
@@ -100,6 +105,12 @@ def validate_cut_in(plan: CutInPlan, variant: SampledVariant, snapshot: Selected
         ))
 
     completion_time = plan.trigger_time_s + duration
+    if completion_time > LATEST_COMPLETION_S:
+        issues.append(_issue(
+            "CUT_IN_TOO_LATE",
+            f"trigger_time_s + lane_change_duration_s phải <= {LATEST_COMPLETION_S:g} s (kịch bản dài {SCENARIO_DURATION_S:g} s).",
+            "trigger_time_s", recoverable=True,
+        ))
     ego_at_completion = plan.ego_speed_kmh / 3.6 * completion_time
     motorcycle_at_completion = offset + plan.motorcycle_speed_kmh / 3.6 * completion_time
     if ego_at_completion > usable_end or motorcycle_at_completion > usable_end:
@@ -124,9 +135,12 @@ def repair_maneuver(plan: CutInPlan, variant: SampledVariant) -> CutInPlan | Non
     usable_end = site.available_length_m - END_BUFFER_M
     lateral = math.hypot(site.ego_anchor.x - site.motorcycle_anchor.x, site.ego_anchor.y - site.motorcycle_anchor.y)
     ego, motorcycle = plan.ego_speed_kmh / 3.6, plan.motorcycle_speed_kmh / 3.6
-    duration = max(plan.lane_change_duration_s, round(lateral / MAX_LATERAL_SPEED_MPS + 0.2, 1))
+    shortest = round(lateral / MAX_LATERAL_SPEED_MPS + 0.2, 1)
+    duration = min(max(plan.lane_change_duration_s, shortest), LATEST_COMPLETION_S)
+    if duration < shortest:
+        return None
     margin = 0.5
-    for trigger in dict.fromkeys((max(plan.trigger_time_s, 0.0), 0.0)):
+    for trigger in dict.fromkeys((min(max(plan.trigger_time_s, 0.0), LATEST_COMPLETION_S - duration), 0.0)):
         completion = trigger + duration
         if ego * completion > usable_end - margin:
             continue
