@@ -64,3 +64,26 @@ def test_first_message_has_only_the_request_facts() -> None:
     facts = json.loads(user["content"])
     assert facts == {"prompt": "Xe máy tạt đầu ô tô", "maps": ["Town01"], "ego_blueprint_id": "vehicle.tesla.model3",
                      "variant_seed": 3, "picked_environment": {"weather_preset": "ClearNoon"}, "locked_actor_type": "truck"}
+
+
+
+def test_openai_service_errors_become_codes_the_user_can_act_on() -> None:
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+
+    def failing(error):
+        class Completions:
+            def create(self, **kwargs):
+                raise error
+        return SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+
+    quota = openai.RateLimitError("no credits", response=httpx.Response(429, request=request),
+                                  body={"error": {"code": "credit_balance_exhausted", "type": "insufficient_quota"}})
+    busy = openai.RateLimitError("slow down", response=httpx.Response(429, request=request), body={"error": {"code": "rate_limit"}})
+    down = openai.APIConnectionError(request=request)
+    for error, code in ((quota, "LLM_QUOTA_EXHAUSTED"), (busy, "LLM_RATE_LIMITED"), (down, "LLM_UNAVAILABLE")):
+        with pytest.raises(LLMCallError) as caught:
+            OpenAILLM(sdk_client=failing(error)).chat([], CatalogTools.specs())
+        assert caught.value.code == code

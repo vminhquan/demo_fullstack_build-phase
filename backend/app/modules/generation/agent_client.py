@@ -143,8 +143,10 @@ class HttpAgentClient:
         error = _agent_error(response)
         if response.status_code == 422:
             raise GenerationRejected(error.get("message") or "The Agent could not generate this scenario", error.get("details") or {}, error.get("code"))
-        # 401 means the Backend and Agent keys differ: a deployment problem, not the user's.
-        raise AgentUnavailable(f"The scenario Agent failed ({response.status_code}: {error.get('code', 'UNKNOWN')})")
+        # 401 means the Backend and Agent keys differ: a deployment problem, not the user's. A 503 carries agent2's
+        # reason (e.g. the OpenAI account has no credit left), shown as is.
+        reason = f": {error['message']}" if error.get("message") else ""
+        raise AgentUnavailable(f"The scenario Agent failed ({response.status_code}: {error.get('code', 'UNKNOWN')}){reason}")
 
 
 def _agent_error(response: httpx.Response) -> dict[str, Any]:

@@ -6,7 +6,7 @@ from app.graph import MAX_LLM_TURNS
 from app.llm.tools import REJECT_TOOL, SUBMIT_TOOL
 from app.llm.client import LLMCallError
 from app.service import generate
-from test_service import FAR, READS, VALID, FakeBackend, ScriptedLLM, request
+from test_service import FAR, READS, VALID, WRONG_LANE, FakeBackend, ScriptedLLM, request
 
 SAVE_TO = {"project_id": 3, "user_id": 8, "prompt": "Xe máy tạt đầu ô tô", "request_hash": "h"}
 
@@ -44,14 +44,24 @@ def test_without_save_to_the_scenario_is_only_returned() -> None:
     assert result.status == "completed" and result.scenarios[0].generation_id is None and backend.saved == []
 
 
-def test_a_scenario_with_no_incident_goes_back_to_the_llm_with_the_numbers() -> None:
-    llm = ScriptedLLM([READS, [(SUBMIT_TOOL, FAR)], [(SUBMIT_TOOL, VALID)]])
+def test_numbers_only_failures_are_tuned_by_simulation() -> None:
+    # FAR merges 250 m ahead: only numbers are wrong, so the system tunes them instead of spending LLM attempts.
+    llm = ScriptedLLM([READS, [(SUBMIT_TOOL, FAR)]])
+    result = generate(request(), llm, FakeBackend())
+    assert result.status == "completed" and len(llm.sent) == 2
+    tuning = result.scenarios[0].plan.tuning
+    assert tuning and tuning[0].startswith("CUT_IN_TOO_FAR: moto1 xuất phát ds_m=")
+    # The structure stays the LLM's: same actor, same lane, same manoeuvre.
+    plan = result.scenarios[0].plan
+    assert [actor.id for actor in plan.actors] == ["moto1"] and plan.actions[0].type == "lane_change"
+
+
+def test_a_wrong_structure_goes_back_to_the_llm() -> None:
+    llm = ScriptedLLM([READS, [(SUBMIT_TOOL, WRONG_LANE)], [(SUBMIT_TOOL, VALID)]])
     result = generate(request(), llm, FakeBackend())
     assert result.status == "completed" and len(llm.sent) == 3
     [feedback] = tool_answers(llm, 3)
-    # A cut-in prompt: merging 250 m ahead is reported as too far, with a start and time found by simulation.
-    assert feedback["valid"] is False and [issue["code"] for issue in feedback["issues"]] == ["CUT_IN_TOO_FAR"]
-    assert "đã thử bằng mô phỏng: đạt" in feedback["issues"][0]["message"]
+    assert [issue["code"] for issue in feedback["issues"]] == ["NO_INCIDENT", "PROMPT_BEHAVIOUR_MISMATCH"]
 
 
 def test_facts_missing_from_the_catalog_are_reported_back() -> None:
@@ -64,10 +74,10 @@ def test_facts_missing_from_the_catalog_are_reported_back() -> None:
 
 
 def test_the_run_fails_after_the_attempts() -> None:
-    llm = ScriptedLLM([[(SUBMIT_TOOL, FAR)]] * 5)
+    llm = ScriptedLLM([[(SUBMIT_TOOL, WRONG_LANE)]] * 5)
     result = generate(request(), llm, FakeBackend())
     assert result.status == "failed" and result.map_failures[0].code == "NO_VALID_PLAN"
-    assert "CUT_IN_TOO_FAR" in result.map_failures[0].message
+    assert "NO_INCIDENT" in result.map_failures[0].message
 
 
 def test_reject_request_ends_the_run_without_searching() -> None:

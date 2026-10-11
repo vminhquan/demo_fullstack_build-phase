@@ -278,3 +278,38 @@ def test_a_cut_in_must_merge_close_in_front():
     assert isinstance(plan, ScenarioPlan) and plan.metrics["entry_ttc_s"] >= 0.5
     # A prompt not about a cut-in is not held to the close-merge rule.
     assert "CUT_IN_TOO_FAR" not in codes(check(far, request("xe máy chuyển làn phía trước"), [SNAPSHOT], GRAPHS))
+
+
+def test_tuning_moves_the_start_so_the_incident_is_at_the_junction():
+    # Variant #3 seen live: the incident happened past the junction window. Only the start was wrong.
+    from app.scenario.check import tune
+
+    plan = tune(at_junction(0), request("xe máy tạt đầu ô tô ở ngã tư"), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan)
+    # Too early (77 m into a 150 m road): the ego starts further along.
+    assert any(note.startswith("INCIDENT_NOT_AT_JUNCTION: ego xuất phát dời +") for note in plan.tuning)
+    forward = tune(at_junction(120), request("xe máy tạt đầu ô tô ở ngã tư"), [SNAPSHOT], GRAPHS)
+    assert codes(check(at_junction(120), request("xe máy tạt đầu ô tô ở ngã tư"), [SNAPSHOT], GRAPHS)) != set()
+    assert isinstance(forward, ScenarioPlan) and any("ego xuất phát dời -" in note for note in forward.tuning)
+    # A structural mistake is not tuned away.
+    wrong = spec([actor("x", MOTO, -1, 10, 50)], [])  # never changes lanes: no incident
+    result = tune(wrong, request(), [SNAPSHOT], GRAPHS)
+    assert isinstance(result, ValidationResult) and "TUNING_TRIED" not in codes(result)
+
+
+
+def test_tuning_moves_an_actor_to_the_side_that_has_a_lane_and_backs_off_an_unavoidable_merge():
+    # Seen live (#2, #10): both actors put on the left, where only a right-hand lane exists.
+    from app.scenario.check import tune
+
+    left = spec([actor("moto1", MOTO, 1, 12, 50), actor("car1", "vehicle.audi.a2", 1, 40, 50)],
+                [action("moto1", 1, "lane_change", direction="into_ego_lane", duration_s=2.0),
+                 action("moto1", 3, "speed", target_speed_kmh=30, acceleration_mps2=3)])
+    plan = tune(left, request("xe máy và ô tô tạt đầu"), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan), plan
+    assert {actor.lane_id for actor in plan.actors} == {-2}
+    assert sum(note.startswith("NO_SUCH_LANE") for note in plan.tuning) == 2
+    # Seen live (#1): the merge leaves no time to react; a nearby start/time that passes is found.
+    tight = cut_in(ds=5, ego_kmh=60, moto_kmh=40, at=0)
+    plan = tune(tight, request(), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan) and plan.tuning[0].startswith("INCIDENT_UNAVOIDABLE")

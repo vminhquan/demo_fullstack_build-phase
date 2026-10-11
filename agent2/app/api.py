@@ -3,7 +3,7 @@ from functools import lru_cache
 from app import logs
 from app.config import get_settings
 from app.contracts import GenerationRequest, GenerationResponse
-from app.llm.client import LLMCallError, from_settings
+from app.llm.client import SERVICE_CODES, LLMCallError, from_settings
 from app.llm.tools import CatalogApi
 from app.service import generate
 from fastapi import FastAPI, Header, HTTPException
@@ -41,7 +41,8 @@ def generate_scenarios(body: GenerationRequest, x_api_key: str | None = Header(d
     result = generate(body, llm, _catalog_api(settings.backend_url, key))
     if result.status in {"failed", "needs_clarification"}:
         first = result.map_failures[0] if result.map_failures else None
-        raise HTTPException(status_code=422, detail={
+        # The LLM service failed (no credit, rate limit...): 503, so the Backend reports the Agent, not the prompt.
+        raise HTTPException(status_code=503 if first and first.code in SERVICE_CODES else 422, detail={
             "code": first.code if first else "NEEDS_CLARIFICATION",
             "message": first.message if first else "Cần làm rõ prompt.",
             "details": {"map_failures": [item.model_dump() for item in result.map_failures],

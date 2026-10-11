@@ -27,7 +27,7 @@ from app.llm.client import LLMCallError
 from app.logs import log, short
 from app.llm.prompts import initial_messages
 from app.llm.tools import REJECT_TOOL, SUBMIT_TOOL, CatalogApi, CatalogTools, ToolError, reject_problem, tool_result
-from app.scenario.check import check, map_cannot_host
+from app.scenario.check import map_cannot_host, tune
 from app.scenario.explore import capabilities
 from app.scenario.lanes import lane_graph
 from app.scenario.render import render_xosc
@@ -227,7 +227,8 @@ def build_xosc(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, A
     except ValidationError as exc:
         feedback = {"valid": False, "issues": [{"code": "INVALID_ARGUMENTS", "message": exc.errors()[0]["msg"]}]}
     else:
-        checked = check(spec, request, runtime.context["selected_snapshots"], runtime.context["lane_graphs"])
+        # The LLM's structure, with numbers tuned by simulation when only numbers are wrong.
+        checked = tune(spec, request, runtime.context["selected_snapshots"], runtime.context["lane_graphs"])
         if isinstance(checked, ValidationResult):
             feedback = {"valid": False, "issues": [issue.model_dump() for issue in checked.issues]}
         else:
@@ -237,13 +238,15 @@ def build_xosc(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, A
                 scenario_id=hashlib.sha256(f"{session}:{digest}".encode()).hexdigest()[:24],
                 variant_no=1, snapshot=snapshot.ref, site_id=checked.start_id, plan=checked, xosc=xml, xosc_sha256=digest,
             )
-            feedback = {"valid": True, "xosc_sha256": digest, "incident": checked.metrics}
+            feedback = {"valid": True, "xosc_sha256": digest, "incident": checked.metrics, "auto_tuned": checked.tuning}
     log(session, "   mô phỏng + kiểm tra: %.0f ms", (time.perf_counter() - started) * 1000)
     if scenario is not None:
         plan = scenario.plan
         log(session, "   ✓ hợp lệ · %s · ego %s %g km/h · %s · %s", plan.title, plan.ego.blueprint_id, plan.ego.speed_kmh,
             ", ".join(f"{a.id}={a.kind} {a.speed_kmh:g} km/h" for a in plan.actors), plan.environment.weather_preset)
         log(session, "   sự cố (%s): %s", plan.critical_actor, short(plan.metrics))
+        if plan.tuning:
+            log(session, "   tự chỉnh số liệu: %s", "; ".join(plan.tuning))
         log(session, "   XOSC %d ký tự · sha256=%s", len(scenario.xosc), scenario.xosc_sha256[:12])
         log(session, "   XOSC:\n%s", scenario.xosc, level=logging.DEBUG)
     else:

@@ -23,8 +23,10 @@ VALID = {
     "critical_actor": "moto1", "expected": "near_miss", "weather_preset": "ClearNoon", "lighting": None, "road_surface": None,
     "duration_s": 8,
 }
-# The same motorcycle placed 250 m ahead: never close enough to be an incident.
+# The same motorcycle placed 250 m ahead: only numbers are wrong (the system can tune them).
 FAR = {**VALID, "actors": [{**VALID["actors"][0], "ds_m": 250}]}
+# The motorcycle never changes lanes, so it never gets in the ego's way: a structural mistake only the LLM can fix.
+WRONG_LANE = {**VALID, "actions": []}
 # A first turn reading two things at once; vehicles and weather come with the prefetched catalog.
 READS = [("find_ego_starts", {"map_name": "Town01", "tags": None, "min_path_m": None, "min_left_lanes": None,
                               "min_right_lanes": 1, "limit": 5}),
@@ -116,3 +118,25 @@ def test_http_boundary_requires_key_and_backend(monkeypatch) -> None:
     assert missing.status_code == 503 and missing.json()["detail"]["code"] == "BACKEND_NOT_CONFIGURED"
     assert response.status_code == 200
     assert response.json()["scenarios"][0]["site_id"] == "1:-1:20"
+
+
+
+def test_an_llm_service_failure_answers_503(monkeypatch) -> None:
+    from app import api
+    from app.llm.client import LLMCallError
+
+    class Settings:
+        agent_api_key = None
+        model_name = "test-llm"
+        backend_url = "http://backend"
+
+    class NoCredit(ScriptedLLM):
+        def chat(self, messages, tools, tool_choice="required"):
+            raise LLMCallError("LLM_QUOTA_EXHAUSTED", "Tài khoản OpenAI đã hết credit.")
+
+    monkeypatch.setattr(api, "get_settings", Settings)
+    monkeypatch.setattr(api, "from_settings", lambda settings: NoCredit([]))
+    monkeypatch.setattr(api, "_catalog_api", lambda url, key: FakeBackend())
+    with TestClient(api.app) as client:
+        response = client.post("/v1/scenarios/generate", json=request().model_dump(mode="json"))
+    assert response.status_code == 503 and response.json()["detail"]["code"] == "LLM_QUOTA_EXHAUSTED"

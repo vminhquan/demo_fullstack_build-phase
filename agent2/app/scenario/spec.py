@@ -7,7 +7,7 @@ tool schema does not allow defaults.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from app.scenario.environment import EnvironmentSelection
 from pydantic import BaseModel, Field
@@ -97,6 +97,8 @@ class ScenarioPlan(BaseModel):
     environment: EnvironmentSelection
     # Critical interaction measured by the simulation (non-reacting ego): min TTC, when, gap, distance...
     metrics: dict[str, float | str | bool | None] = Field(default_factory=dict)
+    # Numbers the system tuned by simulation after the LLM's submission (structure stays the LLM's).
+    tuning: list[str] = Field(default_factory=list)
 
     @property
     def start_id(self) -> str:
@@ -107,6 +109,9 @@ class ValidationIssue(BaseModel):
     code: str = Field(min_length=1)
     message: str = Field(min_length=1)
     field: str | None = None
+    # The same spec with only numbers changed so that this issue passes (found by simulation), and what changed.
+    fix: Any = Field(default=None, exclude=True)
+    fix_note: str | None = Field(default=None, exclude=True)
 
 
 class ValidationResult(BaseModel):
