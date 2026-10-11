@@ -8,7 +8,11 @@ from __future__ import annotations
 import asyncio
 import secrets
 import sys
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 
 from sqlalchemy import select
 

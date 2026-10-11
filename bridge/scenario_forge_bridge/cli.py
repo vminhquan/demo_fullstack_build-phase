@@ -325,7 +325,9 @@ def sync(
                     continue
                 synced += 1
                 state = "mới" if stored.get("created") else "không đổi"
-                log(f"  ✓ {result.map_name} → {target.project_name} (snapshot #{stored.get('snapshot_id')}, {state})")
+                cut_in = len(result.catalog.get("cut_in_sites") or [])
+                sites_label = f", {cut_in} vị trí tạt đầu" if cut_in else ""
+                log(f"  ✓ {result.map_name} → {target.project_name} (snapshot #{stored.get('snapshot_id')}, {state}{sites_label})")
     except CarlaUnavailable as exc:
         fail(f"{exc}\nĐã gửi {synced} map trước khi dừng.")
     if failed:

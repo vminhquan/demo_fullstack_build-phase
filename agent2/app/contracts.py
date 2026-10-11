@@ -7,7 +7,12 @@ checkpointing does not duplicate large waypoint arrays.
 
 from __future__ import annotations
 
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, TypedDict
+
+try:
+    from typing import NotRequired
+except ImportError:
+    from typing_extensions import NotRequired
 
 from app.catalog.models import CutInSite, SelectedSnapshot, SnapshotRef
 from app.cut_in.model import CutInPlan, PromptConstraints, ValidationResult

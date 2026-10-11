@@ -143,7 +143,7 @@ def map_catalog(
     waypoints = carla_map.generate_waypoints(spacing)
     rules = map_facts.guarded(errors, "lane_rules", lambda: [map_facts.lane_rules(item) for item in waypoints])
     speeds = map_facts.guarded(errors, "road_speeds", lambda: map_facts.road_speeds(opendrive), []) if opendrive else []
-    sites = extract_cut_in_sites(waypoints)
+    sites = map_facts.guarded(errors, "cut_in_sites", lambda: extract_cut_in_sites(waypoints), []) or []
     for site in sites:
         site["speed_limit_kmh"] = map_facts.speed_at(speeds, site["ego_lane"]["road_id"], site["ego_s"])
     junctions = map_facts.guarded(errors, "junctions", lambda: map_facts.junctions(carla, waypoints, opendrive))
@@ -324,7 +324,15 @@ def main(argv: list[str] | None = None) -> int:
     {"event": "loading" | "result" | "fatal", ...}. The Bridge itself never imports `carla`."""
     import argparse
     import json
+    import sys
     from dataclasses import asdict
+
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
 
     parser = argparse.ArgumentParser(description="Read CARLA maps into scenario-forge.catalog.v2 documents")
     parser.add_argument("--host", default="127.0.0.1")
@@ -335,7 +343,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     def emit(event: dict[str, Any]) -> None:
-        print(json.dumps(event, ensure_ascii=False, separators=(",", ":")), flush=True)
+        line = json.dumps(event, ensure_ascii=False, separators=(",", ":"))
+        try:
+            print(line, flush=True)
+        except UnicodeEncodeError:
+            print(json.dumps(event, ensure_ascii=True, separators=(",", ":")), flush=True)
 
     maps = [item.strip() for item in args.maps.split(",") if item.strip()] or None
     try:

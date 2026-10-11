@@ -180,12 +180,14 @@ def runner_env(carla_root: str | None, scenario_runner: str | None = None) -> di
         env["SCENARIO_RUNNER_ROOT"] = scenario_runner
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     return env
 
 
 def _run(command: list[str], what: str, env: dict[str, str] | None = None, timeout: float = 1800) -> str:
     try:
-        done = subprocess.run(command, capture_output=True, text=True, env=env, timeout=timeout)
+        done = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=timeout)
     except (OSError, subprocess.TimeoutExpired) as exc:
         raise SetupFailed(f"{what}: {exc}") from exc
     if done.returncode != 0:
@@ -198,7 +200,7 @@ def server_version(python: str, host: str, port: int, carla_root: str | None = N
     """Version reported by the running CARLA server, asked through the runner Python (None when it cannot tell)."""
     code = "import sys, carla\nc = carla.Client(sys.argv[1], int(sys.argv[2])); c.set_timeout(10.0)\nprint(c.get_server_version())"
     try:
-        done = subprocess.run([python, "-c", code, host, str(port)], capture_output=True, text=True, timeout=30, env=runner_env(carla_root))
+        done = subprocess.run([python, "-c", code, host, str(port)], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, env=runner_env(carla_root))
     except (OSError, subprocess.TimeoutExpired):
         return None
     match = _VERSION_IN_FOLDER.search(done.stdout or "")
@@ -326,9 +328,9 @@ def collect(
         command += ["--maps", ",".join(maps)]
     if load_opt:
         command.append("--load-opt")
-    with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as errors:
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", errors="replace") as errors:
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=errors, text=True, encoding="utf-8",
-                                   env=runner_env(cfg.carla_root or None))
+                                   errors="replace", env=runner_env(cfg.carla_root or None))
         try:
             for line in process.stdout:
                 try:

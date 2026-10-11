@@ -89,7 +89,9 @@ async def _sync_catalog(ws: ClientConnection, cfg: BridgeConfig, token: str, mes
                 await send("catalog.sync.progress", index=result.index, total=result.total, map_name=result.map_name, status="failed", error=str(exc))
                 continue
             synced.append(result.map_name)
-            log(f"  ✓ {result.map_name}: {len(result.catalog['spawn_points'])} spawn point, {len(result.catalog['waypoints'])} waypoint")
+            cut_in = len(result.catalog.get("cut_in_sites") or [])
+            sites_label = f", {cut_in} vị trí tạt đầu" if cut_in else ""
+            log(f"  ✓ {result.map_name}: {len(result.catalog['spawn_points'])} spawn point, {len(result.catalog['waypoints'])} waypoint{sites_label}")
             await send("catalog.sync.progress", index=result.index, total=result.total, map_name=result.map_name, status="uploaded",
                        snapshot_id=stored.get("snapshot_id"))
         elif event[0] == "fatal":
