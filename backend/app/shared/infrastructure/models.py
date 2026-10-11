@@ -786,10 +786,15 @@ class Bridge(IdTimestampMixin, Base):
 
 
 class BridgeConnection(IdTimestampMixin, Base):
-    """Link between a Bridge and a project. `uid` is the connection id shared by the Bridge, Backend and Frontend."""
+    """Link between a Bridge and a project. `uid` is the connection id shared by the Bridge, Backend and Frontend.
+
+    A project has at most one active connection (one CARLA server); a Bridge may serve many projects."""
 
     __tablename__ = "bridge_connections"
-    __table_args__ = (UniqueConstraint("bridge_id", "project_id", name="uq_bridge_connection_bridge_project"),)
+    __table_args__ = (
+        UniqueConstraint("bridge_id", "project_id", name="uq_bridge_connection_bridge_project"),
+        Index("uq_bridge_connection_project_active", "project_id", unique=True, postgresql_where=text("revoked_at IS NULL")),
+    )
 
     uid: Mapped[str] = mapped_column(String(32), unique=True)
     bridge_id: Mapped[int] = mapped_column(ForeignKey("bridges.id", ondelete="CASCADE"), index=True)

@@ -123,8 +123,10 @@ async def cancel_pair_code(session: AsyncSession, project_id: int, code_id: int)
 
 async def redeem_pair_code(
     session: AsyncSession, body: BridgePairRequest, device_token: str | None
-) -> tuple[Bridge, BridgeConnection, BridgePairCode, Project, str | None]:
-    """Validates the OTP, registers the machine (or reuses it from its device token) and links it to the project."""
+) -> tuple[Bridge, BridgeConnection, BridgePairCode, Project, str | None, list[BridgeConnection]]:
+    """Validates the OTP, registers the machine (or reuses it from its device token) and links it to the project.
+
+    A project uses one CARLA server: the project's connection to any other Bridge is revoked and returned."""
     pair = await session.scalar(
         select(BridgePairCode)
         .where(
@@ -158,6 +160,16 @@ async def redeem_pair_code(
         bridge.carla_host, bridge.carla_port, bridge.carla_reachable = body.carla.host, body.carla.port, body.carla.reachable
     await session.flush()
 
+    # Revoked before the new link is written: the project may hold only one active connection (partial unique index).
+    replaced = list((await session.scalars(
+        select(BridgeConnection).where(
+            BridgeConnection.project_id == project.id, BridgeConnection.bridge_id != bridge.id, BridgeConnection.revoked_at.is_(None)
+        ).with_for_update()
+    )).all())
+    for item in replaced:
+        item.revoked_at = now()
+    await session.flush()
+
     connection = await session.scalar(
         select(BridgeConnection).where(BridgeConnection.bridge_id == bridge.id, BridgeConnection.project_id == project.id)
     )
@@ -172,7 +184,7 @@ async def redeem_pair_code(
     await session.flush()
     pair.used_at = now()
     pair.connection_id = connection.id
-    return bridge, connection, pair, project, new_token
+    return bridge, connection, pair, project, new_token, replaced
 
 
 async def bridge_from_token(session: AsyncSession, token: str | None) -> Bridge:

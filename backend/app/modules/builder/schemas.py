@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.modules.testcase.schemas import TestCaseResponse
 from app.shared.infrastructure.models import BuilderSessionStatus, DangerLevel
@@ -26,6 +26,9 @@ class BuilderSessionCreate(BaseModel):
     title: str | None = Field(default=None, max_length=290)
     description: str = Field(min_length=3, max_length=3800)
     catalog_source: Literal["DEFAULT", "PROJECT"] = "DEFAULT"
+    # The one ego of the session, picked above the maps; it is copied onto every map (BuilderMapOptions keeps a list
+    # so older sessions with several egos still load).
+    ego_vehicle_code: str | None = Field(default=None, min_length=1, max_length=255)
     maps: list[BuilderMapOptions] = Field(min_length=1, max_length=20)
     tag_names: list[str] = Field(default_factory=list, max_length=20)
 
@@ -35,11 +38,19 @@ class BuilderSessionCreate(BaseModel):
         codes = [item.map_code for item in maps]
         if len(set(codes)) != len(codes):
             raise ValueError("Each map can be picked only once")
-        # Ego is fixed by the user, never sampled by the Agent (BuilderMapOptions stays optional for older sessions).
-        without_ego = [item.map_code for item in maps if not item.ego_vehicle_codes]
-        if without_ego:
-            raise ValueError(f"Pick at least one ego vehicle for: {', '.join(without_ego)}")
         return maps
+
+    @model_validator(mode="after")
+    def single_ego(self) -> BuilderSessionCreate:
+        # Ego is fixed by the user, never sampled by the Agent: exactly one vehicle, the same on every map.
+        if self.ego_vehicle_code:
+            for item in self.maps:
+                item.ego_vehicle_codes = [self.ego_vehicle_code]
+        egos = {code for item in self.maps for code in item.ego_vehicle_codes}
+        if any(not item.ego_vehicle_codes for item in self.maps) or len(egos) != 1:
+            raise ValueError("Pick exactly one ego vehicle for the session")
+        self.ego_vehicle_code = egos.pop()
+        return self
 
 
 class BuilderError(BaseModel):

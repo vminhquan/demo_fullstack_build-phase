@@ -33,6 +33,8 @@ Ví dụ: "Xe máy tạt đầu ô tô khi trời có tuyết" -> unsupported_re
 
 PROPOSE_SYSTEM = """Bạn chỉ đề xuất thao tác xe máy từ làn kề tạt vào phía trước ô tô.
 Dữ liệu map, site, hai xe, tốc độ và môi trường trong input đã được hệ thống xác minh và khóa.
+ego_vehicle là xe ego (ô tô được kiểm thử) do người dùng chọn, lấy từ dữ liệu CARLA: id blueprint và thuộc tính của nó.
+Cân nhắc loại xe ego khi chọn khoảng cách và thời gian.
 Chỉ trả bốn tham số: motorcycle_start_offset_m, trigger_time_s, lane_change_duration_s, desired_lead_gap_m.
 motorcycle_start_offset_m là độ lệch dọc so với ô tô lúc bắt đầu; số dương là xe máy ở phía trước.
 trigger_time_s >= 0; lane_change_duration_s > 0; desired_lead_gap_m > 0.
@@ -81,6 +83,8 @@ def proposal_messages(
         "prompt": prompt,
         "map_name": site.snapshot.map_name,
         "site_id": site.site_id,
+        "ego_vehicle": (variant.ego_vehicle.model_dump(exclude_none=True) if variant.ego_vehicle
+                        else {"id": context.ego_blueprint_id}),
         "ego_lane": site.ego_lane.model_dump(),
         "motorcycle_lane": site.motorcycle_lane.model_dump(),
         "available_length_m": site.available_length_m,

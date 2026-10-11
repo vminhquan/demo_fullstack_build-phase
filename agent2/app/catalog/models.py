@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Pose(BaseModel):
@@ -33,6 +33,9 @@ class LaneWaypoint(Pose):
 
 
 class Blueprint(BaseModel):
+    # Extra blueprint attributes a catalog may carry are kept: they reach the LLM with the ego facts.
+    model_config = ConfigDict(extra="allow")
+
     id: str = Field(min_length=1, max_length=255)
     base_type: str | None = None
     number_of_wheels: int | None = None

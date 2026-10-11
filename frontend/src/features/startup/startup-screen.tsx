@@ -1,13 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { ReactNode, useCallback, useEffect, useState } from "react";
 
-import { API_BASE, api, ApiError, CatalogSnapshot } from "@/lib/api";
+import { API_BASE, api, ApiError, CatalogSnapshot, ServerImpact } from "@/lib/api";
 import { useSession } from "@/shared/auth/session-context";
 import { ErrorNotice, formatDate, Loading } from "@/shared/ui/components";
 import { useProjectPath } from "@/shared/ui/project-path";
 import { Icon } from "@/shared/ui/icons";
+import { useConfirm } from "@/shared/ui/modal";
 import { useCarlaDemo } from "@/features/startup/carla-demo";
 
 import { Bridge, bridgeStatus, isPairExpired, OTP_LENGTH, PendingPair, useBridges } from "./bridge-store";
@@ -19,8 +20,12 @@ export function StartUpScreen() {
   const project = session?.active_project;
   const carla = useCarlaDemo(project?.id);
   const bridges = useBridges(project?.id);
+  const { confirm, dialog } = useConfirm();
   const [maps, setMaps] = useState<CatalogSnapshot[] | null>(null);
   const [error, setError] = useState("");
+  // A project uses one CARLA server; the newest connection is it (older ones only exist until the list reloads).
+  const server = bridges.bridges.length ? bridges.bridges[bridges.bridges.length - 1] : null;
+  const impact = useServerImpact(server ? `${server.connection_uid}:${server.synced_maps.join(",")}` : "");
 
   useEffect(() => {
     if (!session) return;
@@ -40,13 +45,40 @@ export function StartUpScreen() {
   const usingDefault = carla.state.source === "default";
   const status = bridgeStatus(bridges.bridges, usingDefault);
 
+  /** Changing the CARLA server: the existing test cases were generated against the current server's data. */
+  async function changeServer() {
+    if (!server) { void bridges.requestPair(); return; }
+    const latest = await impact.reload();
+    const ok = await confirm({
+      title: "Đổi CARLA server?",
+      confirmLabel: "Tiếp tục, tạo mã kết nối",
+      message: <ChangeServerWarning server={server} impact={latest} />,
+    });
+    if (ok) void bridges.requestPair();
+  }
+  async function disconnect() {
+    if (!server) return;
+    const latest = await impact.reload();
+    const ok = await confirm({
+      title: "Ngắt CARLA server?",
+      confirmLabel: "Ngắt kết nối",
+      message: (
+        <>
+          <p>Ngắt <strong>{server.name}</strong> ({server.connection_uid}) khỏi Project {project?.name}. Máy này vẫn giữ kết nối với các Project khác.</p>
+          <p>Khi chưa có CARLA server, Project không chạy được Simulator Runner{latest?.test_case_count ? ` cho ${latest.test_case_count} test case hiện có` : ""}.</p>
+        </>
+      ),
+    });
+    if (ok) void bridges.remove(server.connection_uid);
+  }
+
   return (
     <main className="main">
       <section className="heading">
         <div>
           <p className="eyebrow">Bắt đầu</p>
           <h1>Start up</h1>
-          <p>Chọn nguồn dữ liệu CARLA cho Project {project.name}: đồng bộ với CARLA trên một hoặc nhiều máy qua Scenario Forge Bridge, hoặc dùng bộ map dựng sẵn.</p>
+          <p>Chọn nguồn dữ liệu CARLA cho Project {project.name}: kết nối một CARLA server qua Scenario Forge Bridge, hoặc dùng bộ map dựng sẵn.</p>
         </div>
         <div className="heading-actions">
           <span className={`pill carla-pill-${status.tone}`} title={status.detail}>{status.label}</span>
@@ -54,30 +86,30 @@ export function StartUpScreen() {
       </section>
 
       <section className="startup-choices">
-        <article className={`panel startup-choice ${bridges.bridges.length > 0 ? "selected" : ""}`}>
+        <article className={`panel startup-choice ${server ? "selected" : ""}`}>
           <div className="startup-choice-head">
             <span className="startup-choice-icon"><Icon name="refresh" /></span>
             <div>
-              <div className="panel-title">Đồng bộ với Scenario Forge Bridge</div>
-              {bridges.bridges.length > 0
-                ? <span className="pill carla-pill-ready">{bridges.bridges.length} bridge đã kết nối</span>
+              <div className="panel-title">Kết nối CARLA server qua Scenario Forge Bridge</div>
+              {server
+                ? <span className="pill carla-pill-ready">Đã kết nối {server.name}</span>
                 : <span className="pill">Chưa kết nối</span>}
             </div>
           </div>
           <p className="muted">
-            Scenario Forge Bridge là phần mềm cài trên máy của bạn, liên kết máy đó với website này. Một Project có thể kết nối nhiều Bridge
-            (mỗi máy chạy CARLA một Bridge); khi chạy Simulator Runner, bạn chọn Bridge sẽ thực thi.
+            Scenario Forge Bridge là phần mềm cài trên máy chạy CARLA, liên kết máy đó với website này. Mỗi Project dùng <strong>một CARLA server duy nhất</strong>;
+            một CARLA server có thể phục vụ nhiều Project. Kết nối server khác sẽ thay thế server hiện tại.
           </p>
           <ul className="startup-list">
-            <li>Dùng đúng map và phiên bản CARLA trên từng máy</li>
-            <li>Chạy kịch bản thật trên CARLA tại máy đã chọn</li>
+            <li>Dùng đúng map và phiên bản CARLA của server</li>
+            <li>Chạy kịch bản thật trên CARLA của server đó</li>
             <li>Kết quả pass / fail gửi về Simulator Runner</li>
           </ul>
 
           {bridges.error && <ErrorNotice>{bridges.error}</ErrorNotice>}
-          {!bridges.loaded ? <Loading text="Đang tải Bridge…" /> : bridges.bridges.length > 0 && (
+          {!bridges.loaded ? <Loading text="Đang tải Bridge…" /> : server && (
             <div className="bridge-list">
-              {bridges.bridges.map((item) => (
+              {[server].map((item) => (
                 <div key={item.connection_uid} className="bridge-item">
                   <div>
                     <strong>{item.name}</strong>
@@ -100,12 +132,13 @@ export function StartUpScreen() {
                     >
                       <Icon name="refresh" size={14} />Đồng bộ dữ liệu CARLA
                     </button>
-                    <button className="button" onClick={() => { if (window.confirm(`Ngắt kết nối ${item.name} (${item.connection_uid}) khỏi Project?`)) void bridges.remove(item.connection_uid); }}>
+                    <button className="button" onClick={() => void disconnect()}>
                       <Icon name="trash" size={14} />Ngắt
                     </button>
                   </div>
                 </div>
               ))}
+              <ServerCompatibility impact={impact.data} />
             </div>
           )}
 
@@ -113,13 +146,14 @@ export function StartUpScreen() {
             <BridgeOtp
               pending={bridges.pending}
               live={bridges.live}
+              replacing={server && server.connection_uid !== bridges.pending.paired?.connection_uid ? server : null}
               onRegenerate={() => void bridges.requestPair()}
               onClose={() => void bridges.cancelPair()}
             />
           ) : (
             <div className="card-actions">
-              <button className="button primary" type="button" onClick={() => void bridges.requestPair()}>
-                <Icon name="plus" size={14} />Thêm kết nối mới
+              <button className={`button ${server ? "" : "primary"}`} type="button" disabled={!bridges.loaded} onClick={() => void changeServer()}>
+                <Icon name={server ? "refresh" : "plus"} size={14} />{server ? "Đổi CARLA server" : "Kết nối CARLA server"}
               </button>
             </div>
           )}
@@ -131,7 +165,7 @@ export function StartUpScreen() {
             <span className="startup-choice-icon"><Icon name="layers" /></span>
             <div>
               <div className="panel-title">Dùng dữ liệu mặc định</div>
-              {usingDefault ? <span className="pill carla-pill-ready">Đang dùng</span> : <span className="pill">{bridges.bridges.length ? "Tùy chọn" : "Chưa có Bridge"}</span>}
+              {usingDefault ? <span className="pill carla-pill-ready">Đang dùng</span> : <span className="pill">{server ? "Tùy chọn" : "Chưa có Bridge"}</span>}
             </div>
           </div>
           <p className="muted">
@@ -163,14 +197,90 @@ export function StartUpScreen() {
           </div>
         </article>
       </section>
+      {dialog}
     </main>
   );
 }
 
+/** Test cases of the project against the connected CARLA server; `key` changes when the server or its synced maps do. */
+function useServerImpact(key: string) {
+  const { session } = useSession();
+  const token = session?.access_token;
+  const [data, setData] = useState<ServerImpact | null>(null);
+  const reload = useCallback(async () => {
+    if (!token) return null;
+    try {
+      const next = await api.getServerImpact(token);
+      setData(next);
+      return next;
+    } catch {
+      return null; // the warning still shows, without the per-map list
+    }
+  }, [token]);
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    api.getServerImpact(token).then((next) => { if (active) setData(next); }).catch(() => undefined);
+    return () => { active = false; };
+  }, [token, key]);
+  return { data, reload };
+}
+
+function mapList(items: ServerImpact["maps"]) {
+  return items.map((item) => `${item.map_code} (${item.count})`).join(", ");
+}
+
+/** Body of the "Đổi CARLA server?" confirmation. */
+function ChangeServerWarning({ server, impact }: { server: Bridge; impact: ServerImpact | null }) {
+  const versions = [...new Set(impact?.maps.flatMap((item) => item.carla_versions) ?? [])];
+  return (
+    <>
+      <p>
+        Project đang dùng CARLA server <strong>{server.name}</strong> ({server.hostname || server.connection_uid}). Mỗi Project chỉ kết nối một CARLA server:
+        khi Bridge mới nhập mã, server hiện tại sẽ bị ngắt khỏi Project này (vẫn giữ kết nối với các Project khác).
+      </p>
+      {impact && impact.test_case_count > 0 ? (
+        <div className="notice notice-warning">
+          <strong>{impact.test_case_count} test case hiện có có thể không hoạt động với CARLA server mới.</strong>
+          <div>
+            Chúng được sinh từ dữ liệu của server cũ: bản đồ {mapList(impact.maps)}{versions.length ? `, CARLA ${versions.join(", ")}` : ""}.
+            Nếu server mới thiếu bản đồ, khác phiên bản CARLA hoặc thiếu blueprint xe, Simulator Runner có thể chạy lỗi.
+          </div>
+        </div>
+      ) : (
+        <p className="muted">Project chưa có test case nào; đổi server không ảnh hưởng dữ liệu hiện có.</p>
+      )}
+      <p className="muted">Sau khi kết nối, hãy bấm “Đồng bộ dữ liệu CARLA” để Test Case Builder dùng bản đồ của server mới. Dữ liệu đã đồng bộ từ server cũ sẽ không còn được dùng để tạo test case.</p>
+    </>
+  );
+}
+
+/** After a server is connected and synced: which existing test cases are on maps or CARLA versions it lacks. */
+function ServerCompatibility({ impact }: { impact: ServerImpact | null }) {
+  if (!impact || impact.test_case_count === 0 || !impact.server_maps.length) return null;
+  const missing = impact.maps.filter((item) => item.on_server === false);
+  const otherVersion = impact.maps.filter((item) => item.on_server && item.carla_versions.some((version) => !impact.server_carla_versions.includes(version)));
+  if (!missing.length && !otherVersion.length) return null;
+  const count = (items: ServerImpact["maps"]) => items.reduce((total, item) => total + item.count, 0);
+  const lines: ReactNode[] = [];
+  if (missing.length) lines.push(<div key="maps">{count(missing)} test case trên bản đồ server này chưa có: {mapList(missing)}.</div>);
+  if (otherVersion.length) {
+    lines.push(<div key="versions">{count(otherVersion)} test case sinh từ phiên bản CARLA khác ({mapList(otherVersion)}); server này có CARLA {impact.server_carla_versions.join(", ")}.</div>);
+  }
+  return (
+    <div className="notice notice-warning">
+      <strong>Một số test case có thể không hoạt động với CARLA server này</strong>
+      {lines}
+    </div>
+  );
+}
+
 /** 6-digit OTP the user types into Scenario Forge Bridge (`pair <code>`); turns into the success state when it is redeemed. */
-function BridgeOtp({ pending, live, onRegenerate, onClose }: {
+function BridgeOtp({ pending, live, replacing, onRegenerate, onClose }: {
   pending: PendingPair;
   live: boolean;
+  /** Server the new Bridge will replace (null when the project has none, or it re-paired the same one). */
+  replacing: Bridge | null;
   onRegenerate: () => void;
   onClose: () => void;
 }) {
@@ -192,6 +302,7 @@ function BridgeOtp({ pending, live, onRegenerate, onClose }: {
           {pending.paired.name} · {pending.paired.hostname} · {pending.paired.os}
         </div>
         <div className="case-key">Mã kết nối <code className="session-code">{pending.paired.connection_uid}</code> (trùng với mã Bridge hiển thị)</div>
+        <div className="field-help">Đây là CARLA server của Project. Bấm “Đồng bộ dữ liệu CARLA” để dùng bản đồ của server này.</div>
         <div className="card-actions"><button className="button" type="button" onClick={onClose}>Đóng</button></div>
       </div>
     );
@@ -216,6 +327,9 @@ function BridgeOtp({ pending, live, onRegenerate, onClose }: {
       <div className="field-help">
         Trên máy chạy CARLA, mở terminal và gõ lệnh dưới đây (mã gồm {OTP_LENGTH} số, dùng được một lần):
       </div>
+      {replacing && (
+        <div className="inline-note">Nhập mã trên máy khác sẽ thay thế CARLA server hiện tại ({replacing.name}). Nhập trên chính máy đó thì chỉ ghép lại.</div>
+      )}
       <div className={`otp-digits ${expired ? "expired" : ""}`} aria-label={`Mã kết nối ${pending.code.split("").join(" ")}`}>
         {pending.code.split("").map((digit, index) => <span key={index} className="otp-digit">{digit}</span>)}
       </div>

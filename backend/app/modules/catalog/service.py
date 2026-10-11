@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
@@ -19,7 +19,7 @@ from sqlalchemy.orm.attributes import set_committed_value
 from app.modules.catalog.contract import CatalogV1
 from app.shared.domain.errors import CatalogUnavailable, NotFound, ValidationFailed
 from app.shared.infrastructure.audit import record_audit
-from app.shared.infrastructure.models import CarlaCatalogSnapshot, CarlaMapData, CatalogSource
+from app.shared.infrastructure.models import BridgeConnection, CarlaCatalogSnapshot, CarlaMapData, CatalogSource
 
 
 # Fields added after catalog.v1 shipped: left out of the digest while absent, so older snapshots keep their hash.
@@ -185,6 +185,17 @@ def visible_to(project_id: int):
     return or_(CarlaCatalogSnapshot.project_id.is_(None), CarlaCatalogSnapshot.project_id == project_id)
 
 
+def from_current_server(project_id: int):
+    """Data synced by a CARLA server the project no longer uses is hidden once another Bridge is connected (a project
+    uses one CARLA server). Without any connected Bridge, earlier synced data stays usable."""
+    active = (BridgeConnection.project_id == project_id, BridgeConnection.revoked_at.is_(None))
+    return or_(
+        CarlaCatalogSnapshot.source != CatalogSource.WORKER,
+        ~exists().where(*active),
+        CarlaCatalogSnapshot.worker_installation_id.in_(select(BridgeConnection.bridge_id).where(*active)),
+    )
+
+
 async def get_snapshot(session: AsyncSession, project_id: int, snapshot_id: int, *, with_catalog: bool = False) -> CarlaCatalogSnapshot:
     statement = select(CarlaCatalogSnapshot).where(CarlaCatalogSnapshot.id == snapshot_id, visible_to(project_id))
     if with_catalog:
@@ -212,6 +223,7 @@ async def resolve_for_generation(
         statement = select(CarlaCatalogSnapshot).where(
             CarlaCatalogSnapshot.project_id == project_id,
             CarlaCatalogSnapshot.source.in_([CatalogSource.WORKER, CatalogSource.IMPORT]),
+            from_current_server(project_id),
         )
     if map_name:
         statement = statement.where(CarlaCatalogSnapshot.map_name == map_name)

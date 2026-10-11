@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.catalog.importers import from_upload
 from app.modules.catalog.options import build_options
 from app.modules.catalog.schemas import CatalogImportRequest, CatalogImportResponse, CatalogSnapshotResponse, MetadataOptionsResponse
-from app.modules.catalog.service import get_snapshot, ingest_snapshot, parse_catalog, visible_to
+from app.modules.catalog.service import from_current_server, get_snapshot, ingest_snapshot, parse_catalog, visible_to
 from app.modules.identity.dependencies import Principal, require
 from app.shared.config import get_settings
 from app.shared.domain.errors import ValidationFailed
@@ -29,7 +29,7 @@ async def list_snapshots(
     if source == "DEFAULT":
         statement = statement.where(CarlaCatalogSnapshot.project_id.is_(None))
     elif source == "PROJECT":
-        statement = statement.where(CarlaCatalogSnapshot.project_id == actor.project_id)
+        statement = statement.where(CarlaCatalogSnapshot.project_id == actor.project_id, from_current_server(actor.project_id))
     rows = (await session.scalars(statement.order_by(CarlaCatalogSnapshot.created_at.desc(), CarlaCatalogSnapshot.id.desc()))).all()
     return [CatalogSnapshotResponse.from_model(row) for row in rows]
 

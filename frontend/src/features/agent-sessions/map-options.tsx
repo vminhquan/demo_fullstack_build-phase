@@ -32,15 +32,80 @@ export function choicesFor(options: MetadataOptions | null, snapshotIds: number[
   };
 }
 export type MapChoices = NonNullable<ReturnType<typeof choicesFor>>;
+export type EgoChoice = Choice & { group: string; maps: string[] };
+
+/** Every car ego in the CARLA data of the listed maps, with the maps whose data has it. */
+export function egoChoicesFor(maps: string[] | null, choices: Record<string, MapChoices | null>): EgoChoice[] | null {
+  if (maps === null || maps.some((map) => !choices[map])) return null;
+  const byCode = new Map<string, EgoChoice>();
+  maps.forEach((map) => choices[map]?.egos.forEach((ego) => {
+    const item = byCode.get(ego.value) ?? { ...ego, maps: [] };
+    byCode.set(ego.value, { ...item, maps: [...item.maps, map] });
+  }));
+  return [...byCode.values()].sort((a, b) => a.group.localeCompare(b.group) || a.label.localeCompare(b.label));
+}
+
+/* ---------------------------------------------------------------- ego picker (required, exactly one) */
+
+export function EgoPicker({
+  choices, value, mapCount, busy, note, onChange,
+}: {
+  choices: EgoChoice[] | null;
+  value: string;
+  mapCount: number;
+  busy: boolean;
+  note: string;
+  onChange: (code: string) => void;
+}) {
+  const picked = choices?.find((item) => item.value === value);
+  const groups = [...new Set((choices ?? []).map((item) => item.group))];
+  return (
+    <section className="map-required" aria-labelledby="ego-required-title">
+      <div className="map-required-head">
+        <div>
+          <strong id="ego-required-title">Xe ego</strong>
+          <span className="required-badge">Bắt buộc</span>
+        </div>
+        {picked && <span className="map-required-count">Chỉ một xe cho cả phiên</span>}
+      </div>
+      {choices === null ? (
+        <span className="field-help"><span className="spinner" />Đang tải xe từ dữ liệu CARLA…</span>
+      ) : choices.length === 0 ? (
+        <span className="field-help">Dữ liệu CARLA chưa có ô tô nào dùng làm xe ego được. Chọn nguồn ở trang Start up.</span>
+      ) : (
+        <>
+          <select className="ego-select" aria-labelledby="ego-required-title" disabled={busy} value={value} onChange={(event) => onChange(event.target.value)}>
+            <option value="">Chọn xe ego…</option>
+            {groups.map((group) => (
+              <optgroup key={group} label={group}>
+                {choices.filter((item) => item.group === group).map((item) => (
+                  <option key={item.value} value={item.value}>{item.label}{item.hint && item.hint !== item.label ? ` · ${item.hint}` : ""}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+          <span className="field-help">
+            {picked
+              ? <>Blueprint <code>{picked.value}</code> ({picked.group}) · có trong dữ liệu CARLA của {picked.maps.length}/{mapCount} bản đồ. Thông tin xe này trong dữ liệu CARLA được gửi cho Agent.</>
+              : "Xe được kiểm thử trong mọi test case của phiên; chỉ chọn một xe. Bản đồ không có xe này sẽ không chọn được."}
+          </span>
+          {note && <span className="field-help ego-note">{note}</span>}
+        </>
+      )}
+    </section>
+  );
+}
 
 /* ---------------------------------------------------------------- map picker (required) */
 
 export function MapPicker({
-  available, selected, busy, onToggle,
+  available, selected, busy, unavailable, onToggle,
 }: {
   available: string[] | null;
   selected: string[];
   busy: boolean;
+  /** Why a map cannot be picked (e.g. its CARLA data lacks the chosen ego), else null. */
+  unavailable: (map: string) => string | null;
   onToggle: (map: string) => void;
 }) {
   return (
@@ -61,8 +126,9 @@ export function MapPicker({
           <div className="map-picker" role="group" aria-label="Chọn bản đồ">
             {available.map((map) => {
               const on = selected.includes(map);
+              const reason = on ? null : unavailable(map);
               return (
-                <button type="button" key={map} className={`map-chip ${on ? "selected" : ""}`} aria-pressed={on} disabled={busy} onClick={() => onToggle(map)}>
+                <button type="button" key={map} className={`map-chip ${on ? "selected" : ""}`} aria-pressed={on} disabled={busy || reason !== null} title={reason ?? undefined} onClick={() => onToggle(map)}>
                   <span className="map-chip-box" aria-hidden="true">{on && <Icon name="tick" size={11} />}</span>
                   {map}
                 </button>
@@ -83,14 +149,13 @@ export function MapPicker({
 /* ---------------------------------------------------------------- per-map tabs */
 
 function CheckGroup({
-  title, help, choices, values, disabled, required = false, onChange,
+  title, help, choices, values, disabled, onChange,
 }: {
   title: string;
   help: string;
   choices: (Choice & { group?: string })[];
   values: string[];
   disabled: boolean;
-  required?: boolean;
   onChange: (values: string[]) => void;
 }) {
   const groups = [...new Set(choices.map((choice) => choice.group ?? ""))];
@@ -99,7 +164,7 @@ function CheckGroup({
     <fieldset className="check-category" disabled={disabled}>
       <legend>
         {title}
-        <span className={`check-category-state ${values.length ? "chosen" : ""}`}>{values.length ? `Đã chọn ${values.length}` : required ? "Bắt buộc" : "Agent tự chọn"}</span>
+        <span className={`check-category-state ${values.length ? "chosen" : ""}`}>{values.length ? `Đã chọn ${values.length}` : "Agent tự chọn"}</span>
         {values.length > 0 && <button type="button" className="text-button" onClick={() => onChange([])}>Bỏ chọn</button>}
       </legend>
       <span className="field-help">{help}</span>
@@ -164,7 +229,7 @@ export function MapOptionTabs({
       <div className="map-tab-panel" role="tabpanel">
         <div className="map-tab-top">
           <span className="field-help">
-            Chọn bao nhiêu giá trị tùy ý; mỗi giá trị đã chọn đều được dùng. Xe ego bắt buộc; các danh mục khác để trống do Agent tự chọn.
+            Chọn bao nhiêu giá trị tùy ý; mỗi giá trị đã chọn đều được dùng. Để trống thì Agent tự chọn. Xe ego chọn chung ở phía trên.
           </span>
           {maps.length > 1 && (
             <button type="button" className="button" disabled={busy} onClick={() => onApplyAll(active)} title="Sao chép các lựa chọn sang các bản đồ khác (bỏ qua giá trị bản đồ đó không có)">
@@ -177,7 +242,6 @@ export function MapOptionTabs({
           <div className="inline-note"><span className="spinner" />Đang tải dữ liệu CARLA của {active}…</div>
         ) : (
           <div className="check-categories">
-            <CheckGroup title="Xe ego" help="Xe được kiểm thử, lấy từ dữ liệu CARLA đã đồng bộ của bản đồ." required choices={mapChoices?.egos ?? []} values={current.ego_vehicle_codes} disabled={busy} onChange={(values) => set({ ego_vehicle_codes: values })} />
             <CheckGroup title="Tác nhân" help="Đối tượng gây tình huống." choices={mapChoices?.adversaries ?? []} values={current.adversary_types} disabled={busy} onChange={(values) => set({ adversary_types: values })} />
             <CheckGroup title="Môi trường" help="Thời tiết và ánh sáng." choices={mapChoices?.environments ?? []} values={current.environment_codes} disabled={busy} onChange={(values) => set({ environment_codes: values })} />
             <CheckGroup

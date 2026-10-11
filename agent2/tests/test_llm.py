@@ -120,7 +120,7 @@ def test_missing_api_key_fails_before_sdk_import() -> None:
 def test_proposal_prompt_has_only_compact_site_facts() -> None:
     messages = proposal_messages("Tạt đầu", variant())
     facts = json.loads(messages[1]["content"])
-    assert set(facts) == {"prompt", "map_name", "site_id", "ego_lane", "motorcycle_lane",
+    assert set(facts) == {"prompt", "map_name", "site_id", "ego_vehicle", "ego_lane", "motorcycle_lane",
                           "available_length_m", "ego_speed_kmh", "motorcycle_speed_kmh",
                           "weather_preset", "road_surface", "feedback"}
 

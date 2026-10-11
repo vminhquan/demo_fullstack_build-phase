@@ -840,6 +840,8 @@ a.case-key { display: inline-block; color: var(--blue); }
 @media (max-width: 720px) { .plan-view, .batch-panel, .odd-banner { margin-left: 12px; margin-right: 12px; } }
 .notice-warning { margin: 16px 20px 0; border-color: var(--amber-border); background: var(--amber-soft); color: var(--amber); }
 .odd-form .notice, .spec-form .notice { margin: 0; }
+.confirm-message .notice, .bridge-list .notice { margin: 8px 0; }
+.confirm-message p { margin: 0 0 8px; }
 
 /* Generation report */
 .report-period { display: flex; gap: 6px; align-items: flex-start; }
@@ -1020,10 +1022,12 @@ a.case-key { display: inline-block; color: var(--blue); }
 .required-badge { padding: 1px 8px; border-radius: 999px; background: var(--red-soft); color: var(--red); font-size: 11px; font-weight: 600; }
 .map-required-count { color: var(--fg-secondary); font-size: 12px; font-weight: 500; }
 .map-picker { display: flex; flex-wrap: wrap; gap: 8px; }
+.ego-select { width: min(100%, 420px); }
+.ego-note { color: var(--amber); }
 .map-chip { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px 6px 8px; border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg); color: var(--fg-secondary); font-size: 13px; cursor: pointer; }
 .map-chip:hover:not(:disabled) { border-color: var(--fg-secondary); color: var(--fg); }
 .map-chip.selected { border-color: var(--green); background: var(--green-soft); color: var(--green); font-weight: 500; }
-.map-chip:disabled { cursor: default; opacity: .6; }
+.map-chip:disabled { cursor: not-allowed; opacity: .5; }
 .map-chip-box { display: inline-grid; width: 16px; height: 16px; place-items: center; border: 1px solid var(--border-strong); border-radius: 4px; background: var(--bg); }
 .map-chip.selected .map-chip-box { border-color: var(--green); background: var(--green); color: #fff; }
 

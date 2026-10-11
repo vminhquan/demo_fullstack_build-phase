@@ -59,8 +59,9 @@ export type BatchItemResult = { id: number; status: TestCaseStatus | null; error
 export type BuilderMapOptions = {
   map_code: string; catalog_snapshot_id?: number | null; ego_vehicle_codes: string[]; adversary_types: string[]; environment_codes: string[]; danger_levels: DangerLevel[];
 };
+/** `ego_vehicle_code` is the one ego of the session (picked above the maps); the Backend copies it onto every map. */
 export type BuilderSessionCreate = {
-  title: string | null; description: string; catalog_source: "DEFAULT" | "PROJECT"; maps: BuilderMapOptions[]; tag_names: string[];
+  title: string | null; description: string; catalog_source: "DEFAULT" | "PROJECT"; ego_vehicle_code: string; maps: BuilderMapOptions[]; tag_names: string[];
 };
 export type BuilderSessionStatus = "GENERATING" | "COMPLETED" | "PARTIAL" | "FAILED";
 export type BuilderSession = {
@@ -81,6 +82,13 @@ export type BridgeSyncState = {
   request_id: string | null; finished: boolean; status: "requested" | "loading" | "uploaded" | "failed" | "done" | null;
   index: number | null; total: number | null; map_name: string | null;
   synced: string[]; failed: { map_name: string | null; error: string }[]; started_at?: string; finished_at?: string;
+};
+/** Test cases the project's CARLA server may not run: generated on maps / CARLA versions of the data they came from. */
+export type ServerImpact = {
+  test_case_count: number;
+  /** `on_server` = the connected server synced that map (null while no server data is known). */
+  maps: { map_code: string; count: number; carla_versions: string[]; on_server: boolean | null }[];
+  connection_uid: string | null; server_maps: string[]; server_carla_versions: string[];
 };
 export type BridgePairCode = { id: number; code: string; expires_at: string; ttl_seconds: number };
 export type BridgeEvent =
@@ -325,6 +333,7 @@ export const api = {
   createBridgePairCode: (token: string) => request<BridgePairCode>("/bridges/pair-codes", { method: "POST" }, token),
   cancelBridgePairCode: (token: string, id: Id) => request<void>(`/bridges/pair-codes/${id}`, { method: "DELETE" }, token),
   listBridges: (token: string) => request<BridgeConnection[]>("/bridges", {}, token),
+  getServerImpact: (token: string) => request<ServerImpact>("/bridges/test-case-impact", {}, token),
   unpairBridge: (token: string, connectionUid: string) => request<void>(`/bridges/${encodeURIComponent(connectionUid)}`, { method: "DELETE" }, token),
   syncBridgeCatalog: (token: string, connectionUid: string, maps?: string[]) =>
     request<{ request_id: string }>(`/bridges/${encodeURIComponent(connectionUid)}/sync`, { method: "POST", body: JSON.stringify({ maps: maps ?? null }) }, token),

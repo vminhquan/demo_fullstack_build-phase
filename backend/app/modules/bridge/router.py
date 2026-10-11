@@ -22,6 +22,8 @@ from app.modules.bridge.schemas import (
     BridgePairResponse,
     ConnectionInfo,
     PairCodeResponse,
+    ServerImpactResponse,
+    TestCaseMapImpact,
 )
 from app.modules.bridge.service import (
     PAIR_CODE_TTL,
@@ -41,11 +43,12 @@ from app.shared.config import get_settings
 from app.shared.domain.errors import Conflict, DomainError, NotFound, ValidationFailed
 from app.shared.infrastructure.audit import record_audit
 from app.shared.infrastructure.db import SessionFactory, get_session
-from app.shared.infrastructure.models import Bridge, BridgeConnection, CarlaCatalogSnapshot, CatalogSource, User
+from app.shared.infrastructure.models import Bridge, BridgeConnection, CarlaCatalogSnapshot, CatalogSource, TestCase, User
 
 logger = logging.getLogger(__name__)
 
-# Any project member may pair, list, use and unpair the project's Bridges (no per-Bridge permissions).
+# Any project member may pair, list, use and unpair the project's Bridge (no per-Bridge permissions).
+# A project uses one CARLA server: pairing another Bridge replaces the current one.
 router = APIRouter(prefix="/bridges", tags=["bridges"])
 # Called by the Bridge itself (device token, not a user) and by browsers over WebSocket (token in the query).
 public_router = APIRouter(tags=["bridges"])
@@ -154,6 +157,48 @@ async def list_bridges(actor: Principal = Depends(require("testcase:read")), ses
     return await project_connections(session, actor.project_id)
 
 
+@router.get("/test-case-impact", response_model=ServerImpactResponse)
+async def test_case_impact(actor: Principal = Depends(require("testcase:read")), session: AsyncSession = Depends(get_session)) -> ServerImpactResponse:
+    """Shown before the project's CARLA server is changed, and after: which test cases its maps no longer cover."""
+    rows = (
+        await session.execute(
+            select(TestCase.map_code, CarlaCatalogSnapshot.carla_version, func.count(TestCase.id))
+            .outerjoin(CarlaCatalogSnapshot, CarlaCatalogSnapshot.id == TestCase.catalog_snapshot_id)
+            .where(TestCase.project_id == actor.project_id, TestCase.discarded_at.is_(None), TestCase.archived_at.is_(None))
+            .group_by(TestCase.map_code, CarlaCatalogSnapshot.carla_version)
+        )
+    ).all()
+    connection = await session.scalar(
+        select(BridgeConnection).where(BridgeConnection.project_id == actor.project_id, BridgeConnection.revoked_at.is_(None))
+    )
+    server_maps: list[str] = []
+    server_versions: list[str] = []
+    if connection is not None:
+        server_maps = (await synced_maps(session, actor.project_id)).get(connection.bridge_id, ([], None))[0]
+        server_versions = sorted(set((await session.scalars(
+            select(CarlaCatalogSnapshot.carla_version).where(
+                CarlaCatalogSnapshot.project_id == actor.project_id,
+                CarlaCatalogSnapshot.source == CatalogSource.WORKER,
+                CarlaCatalogSnapshot.worker_installation_id == connection.bridge_id,
+            )
+        )).all()))
+    by_map: dict[str, tuple[int, set[str]]] = {}
+    for map_code, version, count in rows:
+        total, versions = by_map.get(map_code, (0, set()))
+        by_map[map_code] = (total + count, versions | ({version} if version else set()))
+    maps = [
+        TestCaseMapImpact(
+            map_code=code, count=count, carla_versions=sorted(versions),
+            on_server=(code in server_maps) if server_maps else None,
+        )
+        for code, (count, versions) in sorted(by_map.items())
+    ]
+    return ServerImpactResponse(
+        test_case_count=sum(item.count for item in maps), maps=maps,
+        connection_uid=connection.uid if connection else None, server_maps=server_maps, server_carla_versions=server_versions,
+    )
+
+
 @router.delete("/{connection_uid}", status_code=status.HTTP_204_NO_CONTENT)
 async def unpair_bridge(connection_uid: str, actor: Principal = Depends(require("testcase:read")), session: AsyncSession = Depends(get_session)) -> None:
     connection = await session.scalar(
@@ -228,10 +273,16 @@ async def pair_bridge(
     client = request.client.host if request.client else "unknown"
     limiter.check(client)
     try:
-        bridge, connection, pair, project, new_token = await redeem_pair_code(session, body, bearer_token(authorization))
+        bridge, connection, pair, project, new_token, replaced = await redeem_pair_code(session, body, bearer_token(authorization))
     except ValidationFailed:
         limiter.fail(client)
         raise
+    for item in replaced:
+        await record_audit(
+            session, project_id=project.id, actor_user_id=pair.created_by, action="bridge.unpair",
+            entity_type="bridge_connection", entity_id=item.id,
+            before_data={"connection_uid": item.uid, "by": "replaced", "replaced_by": connection.uid},
+        )
     await record_audit(
         session, project_id=project.id, actor_user_id=pair.created_by, action="bridge.pair",
         entity_type="bridge_connection", entity_id=connection.id,
@@ -246,6 +297,11 @@ async def pair_bridge(
         project.id,
         {"type": "bridge.paired", "pair_code_id": pair.id, "connection": paired.model_dump(mode="json") if paired else None},
     )
+    # The CARLA server this one replaced stops serving the project (it keeps its other projects).
+    for item in replaced:
+        hub.syncs.pop(item.uid, None)
+        await hub.send_bridge(item.bridge_id, {"type": "connection.revoked", "connection_uid": item.uid, "project_id": project.id})
+        await hub.publish_project(project.id, {"type": "bridge.unpaired", "connection_uid": item.uid})
     # A Bridge already online (paired to other projects) starts serving this project without reconnecting.
     await hub.send_bridge(bridge.id, {"type": "connection.added", "connection": info.model_dump(mode="json")})
     return BridgePairResponse(bridge_uid=bridge.uid, device_token=new_token, connection=info)

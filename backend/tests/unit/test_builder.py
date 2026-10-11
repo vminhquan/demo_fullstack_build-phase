@@ -32,16 +32,28 @@ def test_fallback_title_is_the_first_clause_in_a_few_words() -> None:
     assert len(fallback_title("một hai ba bốn năm sáu bảy tám chín mười mười một mười hai mười ba").split()) == 12
 
 
-def test_session_requires_an_ego_for_every_picked_map() -> None:
-    with pytest.raises(ValidationError, match="Town04"):
+def test_session_requires_exactly_one_ego_shared_by_every_map() -> None:
+    with pytest.raises(ValidationError, match="exactly one ego"):
         BuilderSessionCreate(description="Xe máy tạt đầu", maps=[
             BuilderMapOptions(map_code="Town03", ego_vehicle_codes=["vehicle.tesla.model3"]),
             BuilderMapOptions(map_code="Town04"),
         ])
+    with pytest.raises(ValidationError, match="exactly one ego"):
+        BuilderSessionCreate(description="Xe máy tạt đầu", maps=[
+            BuilderMapOptions(map_code="Town03", ego_vehicle_codes=["vehicle.tesla.model3", "vehicle.audi.a2"]),
+        ])
     body = BuilderSessionCreate(description="Xe máy tạt đầu", maps=[
         BuilderMapOptions(map_code="Town03", ego_vehicle_codes=["vehicle.tesla.model3"]),
     ])
-    assert body.maps[0].ego_vehicle_codes == ["vehicle.tesla.model3"]
+    assert body.ego_vehicle_code == "vehicle.tesla.model3"
+
+
+def test_session_ego_is_copied_onto_every_map() -> None:
+    body = BuilderSessionCreate(description="Xe máy tạt đầu", ego_vehicle_code="vehicle.audi.a2", maps=[
+        BuilderMapOptions(map_code="Town03", ego_vehicle_codes=["vehicle.tesla.model3"]),
+        BuilderMapOptions(map_code="Town04"),
+    ])
+    assert [item.ego_vehicle_codes for item in body.maps] == [["vehicle.audi.a2"], ["vehicle.audi.a2"]]
 
 
 def test_variants_keep_the_snapshot_the_screen_listed() -> None:

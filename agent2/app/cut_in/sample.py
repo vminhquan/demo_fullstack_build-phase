@@ -35,6 +35,8 @@ class SamplingError(ValueError):
 class SampledVariant(BaseModel):
     site: CutInSite
     context: SampledContext
+    # Catalog entry of the ego blueprint (the vehicle under test), sent to the LLM with the site facts.
+    ego_vehicle: Blueprint | None = None
 
     @model_validator(mode="after")
     def matches_site(self) -> SampledVariant:
@@ -238,18 +240,19 @@ def sample_variants(
                     "friction_scale_factor": "derived",
                 },
             )
+            ego = rng.choice(item.cars)
             context = SampledContext(
                 site_id=site.site_id,
-                ego_blueprint_id=rng.choice(item.cars).id,
+                ego_blueprint_id=ego.id,
                 motorcycle_blueprint_id=rng.choice(item.motorcycles).id,
                 ego_speed_kmh=constraints.ego_speed_kmh if constraints.ego_speed_kmh is not None else float(rng.randint(25, 55)),
                 motorcycle_speed_kmh=constraints.motorcycle_speed_kmh if constraints.motorcycle_speed_kmh is not None else float(rng.randint(25, 65)),
                 environment=environment,
                 sources={
-                    "site_id": "random", "ego_blueprint_id": "random", "motorcycle_blueprint_id": "random",
+                    "site_id": "random", "ego_blueprint_id": "user" if ego_blueprint_id is not None else "random", "motorcycle_blueprint_id": "random",
                     "ego_speed_kmh": "user" if constraints.ego_speed_kmh is not None else "random",
                     "motorcycle_speed_kmh": "user" if constraints.motorcycle_speed_kmh is not None else "random",
                 },
             )
-            variants.append(SampledVariant(site=site, context=context))
+            variants.append(SampledVariant(site=site, context=context, ego_vehicle=ego))
     return SamplingResult(seed=actual_seed, variants=variants, map_failures=failures)

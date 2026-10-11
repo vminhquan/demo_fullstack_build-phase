@@ -66,6 +66,26 @@ class BridgeConnectionResponse(BaseModel):
     sync: dict | None = None
 
 
+class TestCaseMapImpact(BaseModel):
+    map_code: str
+    # Active (not discarded / archived) test cases on this map, and the CARLA versions they were generated against.
+    count: int
+    carla_versions: list[str]
+    # Whether the connected CARLA server synced this map; None while no server data is known.
+    on_server: bool | None
+
+
+class ServerImpactResponse(BaseModel):
+    """What changing the project's CARLA server may break: its test cases were generated against the old data."""
+
+    test_case_count: int
+    maps: list[TestCaseMapImpact]
+    # Connected server (None = no Bridge) and the CARLA versions it synced.
+    connection_uid: str | None
+    server_maps: list[str]
+    server_carla_versions: list[str]
+
+
 class CatalogSyncRequest(BaseModel):
     # Map names to read; None = every map the user's CARLA has.
     maps: list[str] | None = Field(default=None, max_length=100)

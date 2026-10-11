@@ -6,7 +6,7 @@ import { api, BuilderSession, BuilderSessionCreate, MetadataOptions } from "@/li
 import { labels, useSession } from "@/shared/auth/session-context";
 import { Icon } from "@/shared/ui/icons";
 
-import { choicesFor, emptyMapOptions, MapOptions, MapOptionTabs, MapPicker } from "./map-options";
+import { choicesFor, egoChoicesFor, EgoPicker, emptyMapOptions, MapOptions, MapOptionTabs, MapPicker } from "./map-options";
 
 const EXAMPLE_PROMPTS = [
   { label: "Xe tải phanh gấp trên cao tốc", text: "Xe tải phía trước phanh gấp trên đường thẳng, ego 50 km/h, cách 25 m." },
@@ -18,7 +18,8 @@ function parseTags(text: string) {
   return text.split(",").map((tag) => tag.trim()).filter(Boolean);
 }
 
-/** ChatGPT-style composer of a new session: required maps, one description box, per-map options in a collapsible panel. */
+/** ChatGPT-style composer of a new session: one required ego, required maps, one description box, per-map options in a
+ * collapsible panel. */
 export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: (body: BuilderSessionCreate) => void }) {
   const { session } = useSession();
   const token = session?.access_token;
@@ -45,7 +46,11 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
   }, [token]);
   const available = useMemo(() => (snapshotsByMap ? Object.keys(snapshotsByMap).sort() : null), [snapshotsByMap]);
   const choices = useMemo(() => Object.fromEntries((available ?? []).map((map) => [map, choicesFor(metadata, snapshotsByMap?.[map] ?? [])])), [available, metadata, snapshotsByMap]);
+  const egoChoices = useMemo(() => egoChoicesFor(available, choices), [available, choices]);
 
+  // The one ego of every test case in the session (the Agent never picks it).
+  const [ego, setEgo] = useState("");
+  const [egoNote, setEgoNote] = useState("");
   const [maps, setMaps] = useState<string[]>([]);
   const [mapOptions, setMapOptions] = useState<Record<string, MapOptions>>({});
   const [activeMap, setActiveMap] = useState("");
@@ -59,20 +64,27 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
   const textRef = useRef<HTMLTextAreaElement>(null);
   const optionsOf = (map: string) => mapOptions[map] ?? emptyMapOptions();
   const current = maps.includes(activeMap) ? activeMap : maps[0] ?? "";
-  // Maps whose ego is not picked yet: the ego is fixed by the user, never chosen by the Agent.
-  const mapsWithoutEgo = maps.filter((map) => optionsOf(map).ego_vehicle_codes.length === 0);
-  // A map is required: the Agent only places the scenario on the maps the user picked. A missing ego stays sendable
-  // so submit() can say which map needs one and open its tab.
+  const egoLabel = egoChoices?.find((item) => item.value === ego)?.label ?? ego;
+  const hasEgo = (map: string, code = ego) => !code || (choices[map]?.egos ?? []).some((item) => item.value === code);
+  // Maps and an ego are required: the Agent only places the scenario on the picked maps, with the picked ego. A missing
+  // ego stays sendable so submit() can say so.
   const canSend = !busy && description.trim().length >= 3 && maps.length > 0;
+
+  function changeEgo(next: string) {
+    setEgo(next);
+    setError("");
+    // A picked map whose CARLA data lacks the new ego cannot host it: drop it and say so.
+    const dropped = maps.filter((map) => !hasEgo(map, next));
+    if (dropped.length) setMaps(maps.filter((map) => hasEgo(map, next)));
+    setEgoNote(dropped.length ? `Đã bỏ bản đồ ${dropped.join(", ")}: dữ liệu CARLA của bản đồ đó không có xe này.` : "");
+  }
 
   function toggleMap(map: string) {
     if (maps.includes(map)) { removeMap(map); return; }
     setError("");
+    setEgoNote("");
     setMaps((available ?? []).filter((item) => item === map || maps.includes(item)));
-    // Start a new map with the egos already picked on the other maps that its CARLA data also has (still editable).
-    const egos = choices[map]?.egos ?? [];
-    const carried = [...new Set(maps.flatMap((item) => optionsOf(item).ego_vehicle_codes))].filter((code) => egos.some((ego) => ego.value === code));
-    setMapOptions((previous) => ({ ...previous, [map]: previous[map] ?? { ...emptyMapOptions(), ego_vehicle_codes: carried } }));
+    setMapOptions((previous) => ({ ...previous, [map]: previous[map] ?? emptyMapOptions() }));
     setActiveMap(map);
   }
   function removeMap(map: string) {
@@ -92,7 +104,7 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
         const target = choices[map];
         const keep = (values: string[], list: { value: string }[] | undefined) => values.filter((value) => list?.some((item) => item.value === value));
         next[map] = {
-          ego_vehicle_codes: keep(source.ego_vehicle_codes, target?.egos),
+          ego_vehicle_codes: [],
           adversary_types: keep(source.adversary_types, target?.adversaries),
           environment_codes: keep(source.environment_codes, target?.environments),
           danger_levels: [...source.danger_levels],
@@ -112,21 +124,17 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
   function submit(event?: FormEvent<HTMLFormElement>) {
     event?.preventDefault();
     const text = description.trim();
+    if (!ego) { setError("Chọn một xe ego để tạo test case."); return; }
     if (maps.length === 0) { setError("Chọn ít nhất một bản đồ để tạo test case."); return; }
     if (text.length < 3) { setError("Mô tả tình huống cần ít nhất 3 ký tự."); textRef.current?.focus(); return; }
-    if (mapsWithoutEgo.length) {
-      setError(`Chọn xe ego cho bản đồ: ${mapsWithoutEgo.join(", ")}.`);
-      setActiveMap(mapsWithoutEgo[0]);
-      setPanel("maps");
-      return;
-    }
     // An empty title is summarised by the Backend (Agent), like a chat app names a new conversation.
     onSubmit({
       title: title.trim() || null,
       description: text,
       catalog_source: source ?? "DEFAULT",
+      ego_vehicle_code: ego,
       // Pin the snapshot the choices came from, so generation uses the same CARLA data the user picked from.
-      maps: maps.map((map) => ({ map_code: map, catalog_snapshot_id: snapshotsByMap?.[map]?.[0] ?? null, ...optionsOf(map) })),
+      maps: maps.map((map) => ({ map_code: map, catalog_snapshot_id: snapshotsByMap?.[map]?.[0] ?? null, ...optionsOf(map), ego_vehicle_codes: [ego] })),
       tag_names: parseTags(tagsText),
     });
   }
@@ -141,7 +149,7 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
   return (
     <form className="chat-create" onSubmit={submit} noValidate>
       <h1 className="chat-title">Bạn muốn kiểm thử tình huống nào?</h1>
-      <p className="chat-lead">Chọn bản đồ, rồi mô tả tình huống bằng tiếng Việt tự nhiên. Agent dựng kịch bản OpenSCENARIO trên đúng bản đồ đã chọn và lưu mỗi kịch bản thành bản nháp v1 để duyệt.</p>
+      <p className="chat-lead">Chọn xe ego và bản đồ, rồi mô tả tình huống bằng tiếng Việt tự nhiên. Agent dựng kịch bản OpenSCENARIO trên đúng bản đồ đã chọn và lưu mỗi kịch bản thành bản nháp v1 để duyệt.</p>
 
       {source && (
         <div className="field-help catalog-source-note">
@@ -150,7 +158,14 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
             : <>Đang dùng <strong>bộ map mặc định</strong>. Kết nối Bridge và bấm “Đồng bộ dữ liệu CARLA” ở Start up để dùng map từ CARLA của bạn.</>}
         </div>
       )}
-      <MapPicker available={available} selected={maps} busy={busy} onToggle={toggleMap} />
+      <EgoPicker choices={egoChoices} value={ego} mapCount={available?.length ?? 0} busy={busy} note={egoNote} onChange={changeEgo} />
+      <MapPicker
+        available={available}
+        selected={maps}
+        busy={busy}
+        unavailable={(map) => (hasEgo(map) ? null : `Dữ liệu CARLA của ${map} không có xe ego ${egoLabel}`)}
+        onToggle={toggleMap}
+      />
 
       <div className={`chat-composer ${busy ? "busy" : ""}`}>
         <textarea
@@ -175,8 +190,8 @@ export function SessionInputForm({ busy, onSubmit }: { busy: boolean; onSubmit: 
             {maps.length > 0 && <span className="chat-options-count">{maps.length}</span>}
             <Icon name="chevronDown" size={12} className="chat-options-caret" />
           </button>
-          <span className="chat-composer-meta">{!maps.length ? "Chưa chọn bản đồ" : mapsWithoutEgo.length ? `${mapsWithoutEgo.length} bản đồ chưa chọn xe ego` : `${maps.length} bản đồ`}</span>
-          <button type="submit" className="chat-send" disabled={!canSend} title={!maps.length ? "Chọn ít nhất một bản đồ để tạo test case" : mapsWithoutEgo.length ? `Chọn xe ego cho: ${mapsWithoutEgo.join(", ")}` : "Tạo test case (Enter)"} aria-label="Tạo test case">
+          <span className="chat-composer-meta">{!ego ? "Chưa chọn xe ego" : !maps.length ? "Chưa chọn bản đồ" : `${maps.length} bản đồ · ego ${egoLabel}`}</span>
+          <button type="submit" className="chat-send" disabled={!canSend} title={!ego ? "Chọn một xe ego" : !maps.length ? "Chọn ít nhất một bản đồ để tạo test case" : "Tạo test case (Enter)"} aria-label="Tạo test case">
             {busy ? <span className="spinner" /> : <Icon name="arrowUp" size={16} />}
           </button>
         </div>

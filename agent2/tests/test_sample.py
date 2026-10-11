@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 from app.catalog.find_sites import find_cut_in_sites
 from app.catalog.models import SelectedSnapshot
 from app.cut_in.model import PromptConstraints
 from app.cut_in.sample import SamplingError, sample_variants
+from app.llm.prompts import proposal_messages
 
 
 def snapshot(map_name: str, snapshot_id: int, *, presets: list[str] | None = None,
@@ -126,3 +129,18 @@ def test_consecutive_seeds_walk_through_different_presets() -> None:
     rain = [sample_variants([selected], sites, PromptConstraints(weather_conditions=["rain"]), target_count=1, seed=seed)
             .variants[0].context.environment.weather_preset for seed in range(1, 4)]
     assert sorted(rain) == ["HardRainSunset", "MidRainyNight", "SoftRainNoon"]  # every rain intensity
+
+
+def test_picked_ego_travels_with_its_catalog_entry_to_the_llm() -> None:
+    selected = snapshot("Town01", 1, vehicles=[
+        {"id": "vehicle.audi.a2", "base_type": "car", "number_of_wheels": 4},
+        {"id": "vehicle.tesla.model3", "base_type": "car", "number_of_wheels": 4, "generation": 2},
+        {"id": "vehicle.yamaha.yzf", "number_of_wheels": 2},
+    ])
+    result = sample_variants([selected], find_cut_in_sites([selected]).sites, PromptConstraints(), target_count=3, seed=5,
+                             ego_blueprint_id="vehicle.tesla.model3")
+    for variant in result.variants:
+        assert variant.context.ego_blueprint_id == "vehicle.tesla.model3"
+        assert variant.context.sources["ego_blueprint_id"] == "user"
+        facts = json.loads(proposal_messages("Tạt đầu", variant)[1]["content"])
+        assert facts["ego_vehicle"] == {"id": "vehicle.tesla.model3", "base_type": "car", "number_of_wheels": 4, "generation": 2}
