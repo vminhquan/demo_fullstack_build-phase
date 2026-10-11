@@ -1,99 +1,65 @@
-"""Small, explicit LLM instructions; CARLA facts are supplied by the caller."""
+"""Instructions of the central LLM node; CARLA facts come only from the catalog tools."""
 
 from __future__ import annotations
 
 import json
+from typing import Any
 
-from app.cut_in.sample import SampledVariant
+from app.contracts import GenerationRequest
 
-EXTRACT_SYSTEM = """Bạn trích ràng buộc cho DUY NHẤT tình huống xe máy tạt đầu ô tô.
-Cùng tình huống này: tạt đầu, cắt đầu, cắt ngang đầu xe, chen/lấn vào làn phía trước ô tô, cut-in.
-Chỉ ghi điều kiện được người dùng nói rõ. Thiếu thông tin thì để null hoặc danh sách rỗng; hệ thống sẽ chọn ngẫu nhiên sau.
-location_tags: "đường thẳng" -> straight; "khúc cua", "đường cong" -> curve; "trong giao lộ" -> junction;
-"gần/trước giao lộ", "sắp vào ngã ba" -> junction_approach; "ngã tư" -> intersection_4way.
-junction không chứng minh là ngã tư. "Cao tốc", "đô thị", "trong phố", "đường lớn" thì bỏ qua: không ghi vào
-location_tags và cũng không ghi vào unsupported_requirements (hệ thống chọn đoạn đường có sẵn).
-weather_conditions: "nắng", "trời quang" -> sunny; "mưa" -> rain; "nhiều mây", "âm u" -> cloudy; "đường ướt" -> wet;
-"bão bụi" -> dust; "sương mù" -> fog. Các điều kiện trong danh sách phải cùng xuất hiện.
-lighting: "ban ngày", "buổi trưa" -> day; "ban đêm", "tối" -> night; "hoàng hôn", "chiều tối" -> sunset.
-road_surface: "khô" -> dry; "ướt" -> wet; "trơn" -> slippery.
-Tốc độ trả theo km/h. Nếu không rõ tốc độ thuộc xe nào hoặc đơn vị là gì, ghi vào ambiguities.
-Thiếu thông tin KHÔNG phải ambiguity: không nêu tốc độ, khoảng cách, thời điểm, thời tiết hay mặt đường là bình thường.
-ambiguities chỉ dành cho điều người dùng đã nói nhưng mâu thuẫn hoặc hiểu được theo nhiều cách.
-Câu yêu cầu hệ thống tự chọn tham số không phải điều kiện; bỏ qua.
-Nếu yêu cầu điều kiện ngoài miền hỗ trợ (ví dụ tuyết), ghi vào unsupported_requirements, không bỏ qua.
-Chỉ ghi tình huống khác vào unsupported_requirements khi prompt NÊU RÕ tác nhân hoặc hành vi khác
-(người đi bộ, xe đạp, xe tải tạt đầu, vượt đèn đỏ, va chạm từ phía sau...).
-Prompt ngắn, không nêu loại xe hoặc chỉ nói "tạt đầu"/"cắt ngang đầu xe" vẫn là xe máy tạt đầu ô tô.
-Đừng tự thêm điều kiện địa điểm, thời tiết, tốc độ hoặc tọa độ.
-Ví dụ: "Xe máy tạt đầu ô tô trên đường", "tạt đầu", "xe máy cắt ngang đầu xe ô tô", "tạt đầu trên cao tốc"
--> mọi trường null hoặc rỗng, ambiguities=[], unsupported_requirements=[].
-Ví dụ: "Xe máy tạt đầu ô tô khi trời có tuyết" -> unsupported_requirements=[{"quote": "trời có tuyết", "reason": "tuyết ngoài miền hỗ trợ"}]."""
+SYSTEM = """Bạn dựng một kịch bản kiểm thử cho ô tô ego (xe được kiểm thử) trong CARLA, đúng và hợp lý với prompt,
+để hệ thống mô phỏng kiểm tra và sinh file XOSC. Không có loại kịch bản dựng sẵn: tự chọn tác nhân, vị trí, tốc độ,
+hành động và thời điểm để tạo ra đúng sự cố prompt mô tả.
 
+Quy tắc:
+- Điều prompt (hoặc form) nói rõ thì phải đúng: loại tác nhân, hành vi, thời tiết, ánh sáng, loại đường, tốc độ.
+  Điều không nói thì tự chọn hợp lý và đa dạng.
+- "catalog" trong tin nhắn người dùng là DANH MỤC ĐẦY ĐỦ của từng map (tóm tắt, mọi phương tiện kèm loại và kích
+  thước, mọi weather preset, ô tô ego). Đó không phải gợi ý và không có thứ tự ưu tiên.
+- Không biết gì thêm về map ngoài catalog và kết quả tool. Có thể gọi nhiều tool trong cùng một lượt.
+- Vị trí ego: find_ego_starts (mọi làn) hoặc search_cut_in_sites (cặp làn kề cùng chiều). Bộ lọc chỉ dùng cho điều
+  kịch bản cần; kết quả 0 thì bỏ bớt bộ lọc và tìm lại. describe_position / get_site_* để hiểu thêm một vị trí.
+- Tác nhân đặt tương đối với ego: lane_offset (0 cùng làn, +1 trái, -1 phải; CHỈ làn có thật: xem
+  left_lanes_same_direction / right_lanes_same_direction, hoặc adjacent_lane_side của search_cut_in_sites) và ds_m
+  (+ phía trước, - phía sau, theo tâm xe). Hành động: speed, lane_change, brake_to_stop, mỗi cái có at_time_s.
+  Để một tác nhân đổi vào làn ego, dùng lane_change direction=into_ego_lane (hệ thống tự tính trái/phải).
+- Đủ thông tin thì gọi submit_scenario. Hệ thống mô phỏng với giả định ego KHÔNG phản ứng (giữ làn, giữ tốc độ) và
+  trả lỗi kèm số liệu nếu chưa đạt; sửa đúng các con số được gợi ý rồi nộp lại.
+- Prompt yêu cầu rõ điều chưa dựng được (người đi bộ, rẽ qua giao lộ, đèn giao thông, tuyết...) thì gọi
+  reject_request với đúng đoạn trích đó. catalog.can_host cho biết map có làn bên cạnh cùng chiều (multi_lane), giao lộ,
+  ngã tư, và có chúng CÙNG MỘT CHỖ không (multi_lane_before_junction / multi_lane_before_four_way): nếu thiếu điều
+  prompt cần (tạt đầu ở ngã tư cần multi_lane_before_four_way) thì reject_request trích đúng đoạn đó. Chỉ xét điều
+  prompt THỰC SỰ nói; không tự thêm yêu cầu (prompt không nói ngã tư thì không cần ngã tư).
+- Thời tiết + ánh sáng: chọn weather_preset cho thời tiết; nếu không preset nào có đúng ánh sáng prompt cần (ví dụ bụi
+  mù ban đêm: DustStorm chỉ có ban ngày) thì đặt lighting (day/sunset/night). Không từ chối vì thời tiết/ánh sáng. Thiếu thông tin hoặc không tìm ra vị trí KHÔNG phải lý do từ chối.
+- Hành vi trong prompt phải đúng: tạt đầu = tác nhân ở làn bên cạnh đổi vào làn ego ở PHÍA TRƯỚC ego; phanh gấp =
+  tác nhân phía trước ego brake_to_stop; sự cố không được đến từ phía sau ego trừ khi prompt nói vậy.
+- Prompt nói giao lộ/ngã tư: ego xuất phát trước giao lộ (find_ego_starts tags junction_approach /
+  intersection_4way_approach, xem junction_ahead_m) và sự cố phải xảy ra trong khoảng 40 m trước giao lộ.
 
-PROPOSE_SYSTEM = """Bạn chỉ đề xuất thao tác xe máy từ làn kề tạt vào phía trước ô tô.
-Dữ liệu map, site, hai xe, tốc độ và môi trường trong input đã được hệ thống xác minh và khóa.
-ego_vehicle là xe ego (ô tô được kiểm thử) do người dùng chọn, lấy từ dữ liệu CARLA: id blueprint và thuộc tính của nó.
-Cân nhắc loại xe ego khi chọn khoảng cách và thời gian.
-Chỉ trả bốn tham số: motorcycle_start_offset_m, trigger_time_s, lane_change_duration_s, desired_lead_gap_m.
-motorcycle_start_offset_m là độ lệch dọc so với ô tô lúc bắt đầu; số dương là xe máy ở phía trước.
-trigger_time_s >= 0; lane_change_duration_s > 0; desired_lead_gap_m > 0.
-Chọn số phù hợp với available_length_m, hai tốc độ và mục tiêu xe máy nhập làn phía trước ô tô.
-Hệ thống kiểm tra đúng các điều kiện sau (v = km/h / 3.6, t = trigger_time_s + lane_change_duration_s, L = available_length_m - 5):
-0 <= motorcycle_start_offset_m <= L; lane_change_duration_s >= 1.6; t <= 4 (kịch bản chỉ dài 5 s);
-v_ô_tô * t <= L; motorcycle_start_offset_m + v_xe_máy * t <= L;
-motorcycle_start_offset_m + (v_xe_máy - v_ô_tô) * t >= desired_lead_gap_m + 4.
-Nếu xe máy chậm hơn ô tô, cho xe máy xuất phát phía trước đủ xa và trigger_time_s nhỏ.
-Không đề xuất tọa độ, tên map, site, blueprint, thời tiết hoặc XOSC. Nếu có feedback kiểm tra, sửa bốn tham số theo feedback."""
-
-
-EXTRACT_TOOLS = """Map đã chọn: {maps}.
-Nếu prompt nêu địa điểm, loại đường hoặc tốc độ, có thể gọi search_cut_in_sites để xem map có đoạn đường như vậy không.
-Kết quả tool chỉ để kiểm tra; vẫn chỉ ghi điều kiện người dùng nói rõ.
-Nếu không map nào có đoạn đường thỏa yêu cầu người dùng nói rõ, ghi lý do vào unsupported_requirements."""
-
-PROPOSE_TOOLS = {
-    "get_site_context": "Gọi get_site_context để xem biển tốc độ, đèn, biển dừng, vạch qua đường và giao lộ trên hành lang.",
-    "check_cut_in": "Gọi check_cut_in với bốn tham số dự định; chỉ trả lời khi valid, hoặc khi đã sửa theo lỗi tool báo.",
-}
+Sự cố phải XẢY RA và QUAN SÁT ĐƯỢC (hệ thống kiểm tra bằng mô phỏng):
+- critical_actor phải đi vào đường của ego (cùng làn ego), trong vòng 60 m;
+- expected=near_miss: TTC nhỏ nhất (khoảng cách / tốc độ ego tiến lại gần) <= 3 s, nhưng lúc tác nhân vào làn ego
+  TTC >= 0.5 s để ego còn cơ hội xử lý; expected=collision chỉ khi prompt muốn va chạm không tránh được;
+- sự cố xảy ra trước khi kịch bản kết thúc ít nhất 1 s; ego không được đi hết đoạn đường đã biết;
+- tác nhân khác không được tự gây xung đột với ego; mọi tốc độ, gia tốc, thời gian đổi làn trong giới hạn của loại xe.
+Tối ưu cả vị trí lẫn tốc độ: xe gây sự cố vào làn ego rồi phải chậm hơn ego (hoặc phanh) thì ego mới tiến lại gần.
+Giới hạn tốc độ của đường là mức tối đa, không phải tốc độ nên chọn. Không đề xuất tọa độ hoặc XML."""
 
 
-# Information only: whether CARLA has a preset for the asked weather is checked by code (WEATHER_NOT_AVAILABLE).
-# Asked to judge it, the model also blocked conditions it had just extracted correctly ("trời âm u").
-EXTRACT_ENVIRONMENTS = """Để tham khảo, CARLA của người dùng có các tổ hợp thời tiết, ánh sáng: {environments}.
-Vẫn chỉ trích điều người dùng nói vào các trường; không dùng danh sách này để chặn yêu cầu."""
-
-
-def extraction_messages(
-    prompt: str, map_names: list[str] | None = None, environments: list[str] | None = None,
-) -> list[dict[str, str]]:
-    parts = [EXTRACT_SYSTEM]
-    if environments:
-        parts.append(EXTRACT_ENVIRONMENTS.format(environments="; ".join(environments)))
-    if map_names:
-        parts.append(EXTRACT_TOOLS.format(maps=", ".join(map_names)))
-    return [{"role": "system", "content": "\n".join(parts)}, {"role": "user", "content": prompt}]
-
-
-def proposal_messages(
-    prompt: str, variant: SampledVariant, feedback: list[str] | None = None, *, tool_names: list[str] | None = None,
-) -> list[dict[str, str]]:
-    site, context = variant.site, variant.context
-    facts = {
-        "prompt": prompt,
-        "map_name": site.snapshot.map_name,
-        "site_id": site.site_id,
-        "ego_vehicle": (variant.ego_vehicle.model_dump(exclude_none=True) if variant.ego_vehicle
-                        else {"id": context.ego_blueprint_id}),
-        "ego_lane": site.ego_lane.model_dump(),
-        "motorcycle_lane": site.motorcycle_lane.model_dump(),
-        "available_length_m": site.available_length_m,
-        "ego_speed_kmh": context.ego_speed_kmh,
-        "motorcycle_speed_kmh": context.motorcycle_speed_kmh,
-        "weather_preset": context.environment.weather_preset,
-        "road_surface": context.environment.road_surface,
-        "feedback": feedback or [],
+def initial_messages(request: GenerationRequest, seed: int) -> list[dict[str, Any]]:
+    facts: dict[str, Any] = {
+        "prompt": request.prompt,
+        "maps": [item.ref.map_name for item in request.selected_snapshots],
+        "ego_blueprint_id": request.ego_blueprint_id,
+        "variant_seed": seed,
     }
-    hints = [PROPOSE_TOOLS[name] for name in tool_names or [] if name in PROPOSE_TOOLS]
-    return [{"role": "system", "content": "\n".join([PROPOSE_SYSTEM, *hints])},
-            {"role": "user", "content": json.dumps(facts, ensure_ascii=False, sort_keys=True)}]
+    picked = {key: value for key, value in (("weather_preset", request.weather_preset),
+                                            ("weather_conditions", request.weather_conditions),
+                                            ("lighting", request.lighting)) if value}
+    if picked:
+        facts["picked_environment"] = picked
+    if request.actor_type:
+        facts["locked_actor_type"] = request.actor_type  # the form fixed the kind of the critical actor
+    return [{"role": "system", "content": SYSTEM},
+            {"role": "user", "content": json.dumps(facts, ensure_ascii=False)}]

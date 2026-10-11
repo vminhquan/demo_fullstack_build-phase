@@ -1,4 +1,4 @@
-from app.modules.catalog.agent_tools import search_sites, site_context
+from app.modules.catalog.agent_tools import catalog_summary, list_vehicles, list_weather_presets, search_sites, site_section
 
 
 def site(site_id: str, *, length: float, tags: list[str], speed: float | None = 104.6, side: str = "right",
@@ -40,14 +40,38 @@ def document() -> dict:
         "crosswalks": [{"center": {"x": 100.0, "y": 1.0, "z": 0.0}, "polygon": []}],
         "junctions": [{"junction_id": 5, "center": {"x": 170.0, "y": 0.0, "z": 0.0}, "extent": {"x": 15.0, "y": 15.0},
                        "incoming_road_count": 4, "four_way_candidate": True}],
+        "vehicles": [
+            {"id": "vehicle.tesla.model3", "base_type": "car", "length_m": 4.79, "width_m": 2.16},
+            {"id": "vehicle.yamaha.yzf", "number_of_wheels": 2},
+            {"id": "vehicle.vespa.zx125", "base_type": "motorcycle"},
+            {"id": "vehicle.bh.crossbike", "base_type": "bicycle", "number_of_wheels": 2},
+        ],
+        "weather_presets": ["Default", "ClearNoon", "HardRainNight"],
     }
 
 
 def test_search_filters_and_returns_the_longest_first():
     found = search_sites(document(), tags=["straight"], min_length_m=100)
     assert [item["site_id"] for item in found["sites"]] == ["b", "a"]
-    assert found["total_matching"] == 2 and found["total_sites"] == 4
-    assert found["map_summary"]["tags"] == {"straight": 3, "junction": 1, "curve": 1}
+    # Where the ego starts, and the side the adjacent lane is on (site b: a vehicle moving left comes from the right).
+    assert {key: found["sites"][0][key] for key in ("ego_road_id", "ego_lane_id", "adjacent_lane_side")} == {
+        "ego_road_id": 7, "ego_lane_id": -2, "adjacent_lane_side": "right"}
+    assert found["total_matching"] == 2 and "map_summary" not in found and "hint" not in found
+    # Site answers stay small: no anchors, lanes or coordinates.
+    assert "ego_anchor" not in found["sites"][0] and "ego_lane" not in found["sites"][0]
+
+
+def test_seed_reorders_sites_stably():
+    first = [item["site_id"] for item in search_sites(document(), seed=1)["sites"]]
+    assert first == [item["site_id"] for item in search_sites(document(), seed=1)["sites"]]
+    assert sorted(first) == ["a", "b", "c", "d"]
+    assert any([item["site_id"] for item in search_sites(document(), seed=seed)["sites"]] != first for seed in range(2, 6))
+
+
+def test_summary_counts_what_the_map_offers():
+    summary = catalog_summary(document())
+    assert summary["tags"] == {"straight": 3, "junction": 1, "curve": 1}
+    assert summary["speed_limits_kmh"]["unknown"] == 1 and summary["max_length_m"] == 300.0
 
 
 def test_search_speed_filter_skips_unknown_speeds_and_flags_them():
@@ -55,19 +79,20 @@ def test_search_speed_filter_skips_unknown_speeds_and_flags_them():
     unknown = search_sites(document(), near_junction=True)["sites"]
     assert [item["site_id"] for item in unknown] == ["c"] and unknown[0]["speed_limit_unknown_reason"]
     assert search_sites(document(), lane_change_allowed=False, limit=50)["sites"][0]["site_id"] == "c"
-    assert search_sites(document())["map_summary"]["speed_limits_kmh"]["unknown"] == 1
 
 
-def test_site_context_lists_what_lies_on_the_corridor_in_order():
-    context = site_context(document(), "a")
-    assert context["site"]["ego_anchor"]["yaw"] == 0.0
-    assert [sign["name"] for sign in context["speed_limit"]["signs"]] == ["Speed_90"]
-    assert context["speed_limit"]["ego_road"] == [{"road_id": 7, "from_s": 0.0, "max_kmh": 104.6}]
-    assert [(light["opendrive_id"], light["controls_ego_road"]) for light in context["traffic_lights"]] == [("11", True)]
-    assert context["stop_or_yield_signs"][0]["kind"] == "stop"
-    assert context["crosswalks"] == [{"along_m": 100.0, "lateral_m": 1.0}]
-    assert [junction["junction_id"] for junction in context["junctions"]] == [5]
-    assert site_context(document(), "missing") is None
+def test_each_section_answers_only_its_part_in_corridor_order():
+    geometry = site_section(document(), "a", "geometry")
+    assert geometry["upstream_length_m"] == 20.0 and "traffic_lights" not in geometry
+    speed = site_section(document(), "a", "speed")
+    assert [sign["value"] for sign in speed["signs"]] == [90.0]
+    assert speed["ego_road"] == [{"road_id": 7, "from_s": 0.0, "max_kmh": 104.6}]
+    controls = site_section(document(), "a", "controls")
+    assert [(light["opendrive_id"], light["controls_ego_road"]) for light in controls["traffic_lights"]] == [("11", True)]
+    assert controls["stop_or_yield_signs"][0]["kind"] == "stop"
+    assert controls["crosswalks"] == [{"along_m": 100.0, "lateral_m": 1.0}]
+    assert [junction["junction_id"] for junction in site_section(document(), "a", "junctions")["junctions"]] == [5]
+    assert site_section(document(), "missing", "speed") is None
 
 
 def test_records_without_a_position_are_skipped():
@@ -75,4 +100,20 @@ def test_records_without_a_position_are_skipped():
     # Town03 has junctions known only from the OpenDRIVE, without center/extent.
     doc["junctions"].append({"junction_id": 6, "incoming_road_count": 3, "four_way_candidate": False})
     doc["crosswalks"].append({"polygon": []})
-    assert [junction["junction_id"] for junction in site_context(doc, "a")["junctions"]] == [5]
+    assert [junction["junction_id"] for junction in site_section(doc, "a", "junctions")["junctions"]] == [5]
+    assert len(site_section(doc, "a", "controls")["crosswalks"]) == 1
+
+
+def test_vehicles_and_weather_lists():
+    cars = list_vehicles(document(), "car")
+    assert cars["vehicles"] == [{"id": "vehicle.tesla.model3", "kind": "car", "length_m": 4.8, "width_m": 2.2}]
+    assert {item["id"] for item in list_vehicles(document(), "motorcycle")["vehicles"]} == {"vehicle.yamaha.yzf", "vehicle.vespa.zx125"}
+    everything = {item["id"]: item["kind"] for item in list_vehicles(document(), "all")["vehicles"]}
+    assert everything["vehicle.bh.crossbike"] == "bicycle" and everything["vehicle.yamaha.yzf"] == "motorcycle"
+    assert list_weather_presets(document()) == {"weather_presets": ["ClearNoon", "HardRainNight"]}
+
+
+def test_no_match_returns_what_the_map_offers():
+    found = search_sites(document(), tags=["intersection_4way"])
+    assert found["total_matching"] == 0 and found["sites"] == []
+    assert found["map_summary"]["tags"] == {"straight": 3, "junction": 1, "curve": 1} and found["hint"]

@@ -1,9 +1,8 @@
 """CARLA catalog input and verified cut-in site contracts.
 
-The catalog shape matches the Bridge's ``scenario-forge.catalog.v1`` payload. A ``catalog.v2`` document is
-accepted too: its extra facts (lane rules, junctions, signals...) are ignored here until the Agent uses them.
-Sampled waypoints alone do not prove lane adjacency, so ``CutInSite`` is a
-separate, verified result produced by a later site-finding step.
+The catalog shape matches the Bridge's ``scenario-forge.catalog.v1`` payload. A ``catalog.v2`` document also
+carries lane neighbours and the lane topology, which the lane graph (app.scenario.lanes) follows; facts not modelled
+here (signals, junction details...) are read through the Backend's catalog tools.
 """
 
 from __future__ import annotations
@@ -22,6 +21,16 @@ class Pose(BaseModel):
     yaw: float = 0.0
 
 
+class NeighborLane(BaseModel):
+    """The lane beside a waypoint, as CARLA's get_left_lane / get_right_lane saw it (relative to travel direction)."""
+
+    road_id: int
+    section_id: int = 0
+    lane_id: int
+    s: float = 0.0
+    lane_type: str | None = None
+
+
 class LaneWaypoint(Pose):
     road_id: int
     section_id: int = 0
@@ -30,6 +39,33 @@ class LaneWaypoint(Pose):
     lane_width: float = Field(default=3.5, gt=0)
     is_junction: bool = False
     lane_type: str = "Driving"
+    # catalog.v2 lane rules
+    junction_id: int | None = None
+    lane_change: str | None = None
+    left_lane: NeighborLane | None = None
+    right_lane: NeighborLane | None = None
+
+
+class JunctionInfo(BaseModel):
+    """catalog.v2 junction facts the lane graph needs (centre, extent and lane paths are not modelled here)."""
+
+    junction_id: int
+    incoming_road_count: int | None = None
+    four_way_candidate: bool | None = None
+
+
+class TopologyEnd(BaseModel):
+    road_id: int
+    section_id: int = 0
+    lane_id: int
+    s: float = 0.0
+
+
+class TopologyLink(BaseModel):
+    """CARLA map topology: driving on from the `start` lane leads into the `end` lane."""
+
+    start: TopologyEnd
+    end: TopologyEnd
 
 
 class Blueprint(BaseModel):
@@ -83,6 +119,8 @@ class CatalogV1(BaseModel):
     weather_presets: list[str] = Field(default_factory=list)
     # None means a legacy catalog with no site index; [] means the Bridge checked and found none.
     cut_in_sites: list[CatalogCutInSite] | None = None
+    topology: list[TopologyLink] | None = None
+    junctions: list[JunctionInfo] | None = None
     content_hash: str | None = None
 
 

@@ -4,110 +4,49 @@ import json
 from types import SimpleNamespace
 
 import pytest
-from app.catalog.find_sites import find_cut_in_sites
-from app.cut_in.model import EnvironmentSelection, SampledContext
-from app.cut_in.sample import SampledVariant
+from app.contracts import GenerationRequest
 from app.llm.client import LLMCallError, OpenAILLM
-from app.llm.prompts import proposal_messages
-from test_sample import snapshot
+from app.llm.prompts import initial_messages
+from app.llm.tools import CatalogTools
+from world import snapshot
+
+
+def tool_call(name: str, arguments: dict, call_id: str = "c1"):
+    return SimpleNamespace(id=call_id, function=SimpleNamespace(name=name, arguments=json.dumps(arguments)))
 
 
 class FakeCompletions:
-    def __init__(self, parsed, *, refusal=None, finish_reason="stop"):
-        self.parsed = parsed
-        self.refusal = refusal
-        self.finish_reason = finish_reason
-        self.calls = []
+    def __init__(self, message):
+        self.message, self.calls = message, []
 
-    def parse(self, **kwargs):
+    def create(self, **kwargs):
         self.calls.append(kwargs)
-        message = SimpleNamespace(parsed=self.parsed, refusal=self.refusal)
-        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=self.finish_reason)])
+        return SimpleNamespace(choices=[SimpleNamespace(message=self.message, finish_reason="tool_calls")])
 
 
 def fake_client(completions: FakeCompletions):
     return SimpleNamespace(chat=SimpleNamespace(completions=completions))
 
 
-def variant() -> SampledVariant:
-    selected = snapshot("Town01", 1)
-    site = find_cut_in_sites([selected]).sites[0]
-    context = SampledContext(
-        site_id=site.site_id, ego_blueprint_id="vehicle.tesla.model3", motorcycle_blueprint_id="vehicle.yamaha.yzf",
-        ego_speed_kmh=37, motorcycle_speed_kmh=43,
-        environment=EnvironmentSelection(profile_id="carla_preset:HardRainNight", weather_conditions=["rain"],
-                                         weather_preset="HardRainNight", time_of_day_hour=22,
-                                         road_surface="slippery", friction_scale_factor=0.6),
-    )
-    return SampledVariant(site=site, context=context)
+def test_chat_returns_the_tool_calls_as_a_message_and_requires_a_tool() -> None:
+    message = SimpleNamespace(content=None, refusal=None, tool_calls=[
+        tool_call("search_cut_in_sites", {"map_name": "Town01"}, "a"), tool_call("find_ego_starts", {"map_name": "Town01"}, "b"),
+    ])
+    completions = FakeCompletions(message)
+    reply = OpenAILLM(sdk_client=fake_client(completions)).chat([{"role": "user", "content": "x"}], CatalogTools.specs())
+    assert [call["function"]["name"] for call in reply["tool_calls"]] == ["search_cut_in_sites", "find_ego_starts"]
+    assert reply["role"] == "assistant" and reply["tool_calls"][0]["id"] == "a"
+    sent = completions.calls[0]
+    assert sent["tool_choice"] == "required" and sent["parallel_tool_calls"] is True and sent["model"] == "gpt-4o-mini"
 
 
-def test_extract_constraints_keeps_unspecified_fields_empty() -> None:
-    reply = {
-        "location_tags": [], "weather_conditions": [], "lighting": None, "road_surface": None,
-        "ego_speed_kmh": None, "motorcycle_speed_kmh": None,
-        "ambiguities": [], "unsupported_requirements": [],
-    }
-    completions = FakeCompletions(reply)
-    llm = OpenAILLM(sdk_client=fake_client(completions))
-    constraints = llm.extract_constraints("Xe máy tạt đầu ô tô")
-    assert constraints.location_tags == [] and constraints.weather_conditions == []
-    assert constraints.ego_speed_kmh is None and constraints.road_surface is None
-    assert completions.calls[0]["model"] == "gpt-4o-mini"
-    assert completions.calls[0]["response_format"].__name__ == "_PromptExtraction"
-    assert completions.calls[0]["messages"][1]["content"] == "Xe máy tạt đầu ô tô"
-
-
-def test_extract_intersection_and_weather_without_downgrading() -> None:
-    reply = {
-        "location_tags": ["intersection_4way"], "weather_conditions": ["rain"],
-        "lighting": "night", "road_surface": "slippery", "ego_speed_kmh": 37,
-        "motorcycle_speed_kmh": 43, "ambiguities": [], "unsupported_requirements": [],
-    }
-    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
-    constraints = llm.extract_constraints("Xe máy tạt đầu ô tô ở ngã tư, trời mưa ban đêm, đường trơn")
-    assert constraints.location_tags == ["intersection_4way"]
-    assert constraints.weather_conditions == ["rain"] and constraints.road_surface == "slippery"
-
-
-def test_proposal_only_sets_four_fields_and_preserves_sampled_facts() -> None:
-    sampled = variant()
-    reply = {"motorcycle_start_offset_m": 10, "trigger_time_s": 2,
-             "lane_change_duration_s": 2.5, "desired_lead_gap_m": 5,
-             "site_id": "invented-site", "ego_speed_kmh": 100}
-    completions = FakeCompletions(reply)
-    llm = OpenAILLM(sdk_client=fake_client(completions))
-    plan = llm.propose_maneuver("Tạt đầu", sampled, feedback=["Khoảng cách trước xe cần lớn hơn."])
-    assert plan.site_id == sampled.site.site_id
-    assert plan.ego_blueprint_id == sampled.context.ego_blueprint_id
-    assert plan.environment == sampled.context.environment
-    assert plan.ego_speed_kmh == 37 and plan.motorcycle_speed_kmh == 43
-    assert plan.motorcycle_start_offset_m == 10 and plan.desired_lead_gap_m == 5
-    request = json.loads(completions.calls[0]["messages"][1]["content"])
-    assert request["map_name"] == "Town01" and request["available_length_m"] == 65
-    assert request["feedback"] == ["Khoảng cách trước xe cần lớn hơn."]
-    assert "waypoints" not in request
-    assert completions.calls[0]["response_format"].__name__ == "_ManeuverProposal"
-
-
-def test_invalid_proposal_is_rejected_before_plan_output() -> None:
-    reply = {"motorcycle_start_offset_m": -8, "trigger_time_s": 2,
-             "lane_change_duration_s": -1, "desired_lead_gap_m": 5}
-    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
-    with pytest.raises(LLMCallError) as error:
-        llm.propose_maneuver("Tạt đầu", variant())
-    assert error.value.code == "LLM_INVALID_PROPOSAL"
-
-
-@pytest.mark.parametrize("completions,code", [
-    (FakeCompletions(None, refusal="refused"), "LLM_REFUSAL"),
-    (FakeCompletions(None, finish_reason="length"), "LLM_INCOMPLETE_RESPONSE"),
-    (FakeCompletions(None), "LLM_UNPARSEABLE_RESPONSE"),
+@pytest.mark.parametrize(("message", "code"), [
+    (SimpleNamespace(content="xin chào", refusal=None, tool_calls=None), "LLM_NO_TOOL_CALL"),
+    (SimpleNamespace(content=None, refusal="không", tool_calls=None), "LLM_REFUSAL"),
 ])
-def test_refusal_truncation_and_missing_parsed_response(completions: FakeCompletions, code: str) -> None:
-    llm = OpenAILLM(sdk_client=fake_client(completions))
+def test_answers_without_a_tool_call_fail(message, code: str) -> None:
     with pytest.raises(LLMCallError) as error:
-        llm.extract_constraints("Xe máy tạt đầu ô tô")
+        OpenAILLM(sdk_client=fake_client(FakeCompletions(message))).chat([], CatalogTools.specs())
     assert error.value.code == code
 
 
@@ -117,67 +56,11 @@ def test_missing_api_key_fails_before_sdk_import() -> None:
     assert error.value.code == "OPENAI_NOT_CONFIGURED"
 
 
-def test_proposal_prompt_has_only_compact_site_facts() -> None:
-    messages = proposal_messages("Tạt đầu", variant())
-    facts = json.loads(messages[1]["content"])
-    assert set(facts) == {"prompt", "map_name", "site_id", "ego_vehicle", "ego_lane", "motorcycle_lane",
-                          "available_length_m", "ego_speed_kmh", "motorcycle_speed_kmh",
-                          "weather_preset", "road_surface", "feedback"}
-
-
-def test_sampled_variant_rejects_context_from_another_site() -> None:
-    sampled = variant()
-    with pytest.raises(ValueError, match="site_id does not match"):
-        SampledVariant(site=sampled.site, context=sampled.context.model_copy(update={"site_id": "other-site"}))
-
-
-def test_only_quoted_requirements_block_and_missing_details_do_not() -> None:
-    reply = {
-        "location_tags": [], "weather_conditions": [], "lighting": None, "road_surface": None,
-        "ego_speed_kmh": None, "motorcycle_speed_kmh": None, "ambiguities": [],
-        "unsupported_requirements": [
-            {"quote": "trời  có TUYẾT", "reason": "tuyết ngoài miền hỗ trợ"},
-            {"quote": "", "reason": "Không có thông tin về tốc độ"},
-            {"quote": "tốc độ và thời tiết", "reason": "Thiếu tốc độ và thời tiết"},
-        ],
-    }
-    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
-    constraints = llm.extract_constraints("Xe máy tạt đầu ô tô khi trời có tuyết")
-    assert constraints.unsupported_requirements == ['"trời  có TUYẾT": tuyết ngoài miền hỗ trợ']
-
-
-def test_extraction_is_told_what_this_carla_can_build_and_answers_from_closed_lists() -> None:
-    from app.cut_in.sample import available_environments
-    from app.llm.client import _PromptExtraction
-    from app.llm.prompts import extraction_messages
-
-    environments = available_environments([snapshot("Town01", 1, presets=["ClearNoon", "HardRainNight", "Default"])])
-    assert environments == ["rain, night", "sunny, day"]
-    system = extraction_messages("Xe máy tạt đầu ô tô", environments=environments)[0]["content"]
-    assert "rain, night; sunny, day" in system and "search_cut_in_sites" not in system
-    schema = _PromptExtraction.model_json_schema()["properties"]
-    assert schema["location_tags"]["items"]["enum"][-1] == "intersection_4way"
-    assert {"enum": ["day", "night", "sunset"], "type": "string"} in schema["lighting"]["anyOf"]
-
-
-def test_a_kind_of_road_never_blocks_the_prompt() -> None:
-    reply = {
-        "location_tags": [], "weather_conditions": ["cloudy"], "lighting": None, "road_surface": None,
-        "ego_speed_kmh": None, "motorcycle_speed_kmh": None, "ambiguities": [],
-        "unsupported_requirements": [{"quote": "trên cao tốc", "reason": "cao tốc ngoài miền hỗ trợ"}],
-    }
-    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
-    constraints = llm.extract_constraints("xe máy tạt đầu ô tô trên cao tốc trời âm u")
-    assert constraints.unsupported_requirements == [] and constraints.weather_conditions == ["cloudy"]
-
-
-def test_a_condition_the_model_extracted_is_not_also_blocked() -> None:
-    reply = {
-        "location_tags": [], "weather_conditions": ["cloudy"], "lighting": None, "road_surface": None,
-        "ego_speed_kmh": None, "motorcycle_speed_kmh": None, "ambiguities": [],
-        "unsupported_requirements": [{"quote": "trời âm u", "reason": "âm u ngoài miền hỗ trợ"},
-                                     {"quote": "có tuyết", "reason": "tuyết ngoài miền hỗ trợ"}],
-    }
-    llm = OpenAILLM(sdk_client=fake_client(FakeCompletions(reply)))
-    constraints = llm.extract_constraints("xe máy tạt đầu ô tô trời âm u có tuyết")
-    assert constraints.unsupported_requirements == ['"có tuyết": tuyết ngoài miền hỗ trợ']
+def test_first_message_has_only_the_request_facts() -> None:
+    request = GenerationRequest(session_id="s", prompt="Xe máy tạt đầu ô tô", selected_snapshots=[snapshot("Town01", 1)],
+                                ego_blueprint_id="vehicle.tesla.model3", weather_preset="ClearNoon", actor_type="truck")
+    system, user = initial_messages(request, seed=3)
+    assert "submit_scenario" in system["content"]
+    facts = json.loads(user["content"])
+    assert facts == {"prompt": "Xe máy tạt đầu ô tô", "maps": ["Town01"], "ego_blueprint_id": "vehicle.tesla.model3",
+                     "variant_seed": 3, "picked_environment": {"weather_preset": "ClearNoon"}, "locked_actor_type": "truck"}

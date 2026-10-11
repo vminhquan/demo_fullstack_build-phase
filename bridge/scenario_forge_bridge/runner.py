@@ -43,6 +43,8 @@ LOG_TAIL_CHARS = 3000
 
 # Runs in the runner Python while a scenario plays: keeps the CARLA window camera on the ego ("hero" / "Ego"),
 # and pulls back to frame both vehicles when another actor comes within 30 m. Exits when the ego is gone.
+# The camera stays low (a few metres above the ego's road, looking almost level): from higher up it ended above
+# the ceiling in tunnels and showed nothing.
 CAMERA_CODE = r"""
 import math, sys, time
 import carla
@@ -67,12 +69,12 @@ while time.time() < deadline:
     dist = near.get_location().distance(h.location) if near else 1e9
     if dist < 30:
         mid = (h.location + near.get_location()) * 0.5
-        back = 10 + dist * 0.6
-        loc = carla.Location(mid.x - back * math.cos(yaw), mid.y - back * math.sin(yaw), mid.z + 6 + dist * 0.4)
-        rot = carla.Rotation(pitch=-30, yaw=h.rotation.yaw)
+        back = 7 + dist * 0.5
+        loc = carla.Location(mid.x - back * math.cos(yaw), mid.y - back * math.sin(yaw), h.location.z + 2.8)
+        rot = carla.Rotation(pitch=-10, yaw=h.rotation.yaw)
     else:
-        loc = h.location + carla.Location(x=-10 * math.cos(yaw), y=-10 * math.sin(yaw), z=5)
-        rot = carla.Rotation(pitch=-15, yaw=h.rotation.yaw)
+        loc = h.location + carla.Location(x=-8 * math.cos(yaw), y=-8 * math.sin(yaw), z=2.5)
+        rot = carla.Rotation(pitch=-8, yaw=h.rotation.yaw)
     try:
         world.get_spectator().set_transform(carla.Transform(loc, rot))
     except RuntimeError:

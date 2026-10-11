@@ -196,26 +196,39 @@ async def create_generation(
             prompt=body.prompt, catalog=snapshot.catalog, auto_repair=body.auto_repair, seed=body.seed, constraints=constraints,
             snapshot_id=snapshot.id, content_hash=snapshot.content_hash,
             environment_code=body.metadata.environment_code if body.metadata else None,
+            # agent2's save node stores the XOSC itself through /internal/agent/scenario-generations.
+            save_to={"project_id": actor.project_id, "user_id": actor.id, "prompt": body.prompt, "request_hash": key},
         ), **context)
         xosc = result.pop("xosc")
+    form = None
     if body.spec is not None or constraints is not None:
-        result["form"] = {"spec": body.spec, "constraints": constraints, "metadata": body.metadata.model_dump() if body.metadata else None}
-    generation = ScenarioGeneration(
-        request_hash=key,
-        cache_hit=cached is not None,
-        project_id=actor.project_id,
-        created_by=actor.id,
-        prompt=body.prompt,
-        catalog_snapshot_id=snapshot.id,
-        status=GenerationStatus.COMPLETED,
-        generation_mode=result.get("generation_mode", "unknown"),
-        model=result.get("model"),
-        result=result,
-        xosc=xosc,
-        xosc_sha256=result.get("xosc_sha256", ""),
-    )
-    session.add(generation)
-    await session.flush()
+        form = {"spec": body.spec, "constraints": constraints, "metadata": body.metadata.model_dump() if body.metadata else None}
+        result["form"] = form
+    stored_id = None if cached is not None else result.pop("generation_id", None)
+    if stored_id is not None:
+        generation = await get_generation(session, actor.project_id, stored_id, locked=True)
+        if generation.created_by != actor.id or generation.catalog_snapshot_id != snapshot.id:
+            raise Conflict("The Agent stored the scenario for another user or CARLA snapshot")
+        if form is not None:
+            generation.result = {**generation.result, "form": form}
+        result = {**generation.result, "usage": result.get("usage", {})}
+    else:
+        generation = ScenarioGeneration(
+            request_hash=key,
+            cache_hit=cached is not None,
+            project_id=actor.project_id,
+            created_by=actor.id,
+            prompt=body.prompt,
+            catalog_snapshot_id=snapshot.id,
+            status=GenerationStatus.COMPLETED,
+            generation_mode=result.get("generation_mode", "unknown"),
+            model=result.get("model"),
+            result=result,
+            xosc=xosc,
+            xosc_sha256=result.get("xosc_sha256", ""),
+        )
+        session.add(generation)
+        await session.flush()
     session.add(AgentCall(
         project_id=actor.project_id, user_id=actor.id, kind="GENERATE", status="COMPLETED", generation_id=generation.id,
         generation_mode=generation.generation_mode, cache_hit=cached is not None,

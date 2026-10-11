@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from app import logs
 from app.config import get_settings
 from app.contracts import GenerationRequest, GenerationResponse
 from app.llm.client import LLMCallError, from_settings
@@ -8,6 +9,7 @@ from app.service import generate
 from fastapi import FastAPI, Header, HTTPException
 
 app = FastAPI(title="Scenario Forge Agent 2")
+logs.setup(get_settings().log_level, get_settings().log_max_chars)
 
 
 @lru_cache
@@ -32,8 +34,11 @@ def generate_scenarios(body: GenerationRequest, x_api_key: str | None = Header(d
         llm = from_settings(settings)
     except LLMCallError as exc:
         raise HTTPException(status_code=503, detail={"code": exc.code, "message": str(exc)}) from exc
+    if not settings.backend_url:
+        # The LLM reads the catalog and the save node stores the XOSC only through the Backend.
+        raise HTTPException(status_code=503, detail={"code": "BACKEND_NOT_CONFIGURED", "message": "Thiếu BACKEND_URL cho agent2."})
     key = settings.agent_api_key.get_secret_value() if settings.agent_api_key else None
-    result = generate(body, llm, _catalog_api(settings.backend_url, key) if settings.backend_url else None)
+    result = generate(body, llm, _catalog_api(settings.backend_url, key))
     if result.status in {"failed", "needs_clarification"}:
         first = result.map_failures[0] if result.map_failures else None
         raise HTTPException(status_code=422, detail={

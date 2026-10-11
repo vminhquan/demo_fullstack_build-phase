@@ -1,4 +1,4 @@
-"""Backend adapter to agent2's catalog-grounded cut-in generation API."""
+"""Backend adapter to agent2's catalog-grounded scenario generation API (scenarios composed by its LLM)."""
 from __future__ import annotations
 
 import hashlib
@@ -15,7 +15,7 @@ class AgentPort(Protocol):
     async def generate(
         self, *, prompt: str, catalog: dict[str, Any], auto_repair: bool, seed: int | None,
         constraints: dict[str, Any] | None = None, snapshot_id: int | None = None,
-        content_hash: str | None = None, environment_code: str | None = None,
+        content_hash: str | None = None, environment_code: str | None = None, save_to: dict[str, Any] | None = None,
     ) -> dict[str, Any]: ...
 
     async def refine(self, *, spec: dict[str, Any], catalog: dict[str, Any], seed: int | None) -> dict[str, Any]: ...
@@ -23,6 +23,47 @@ class AgentPort(Protocol):
     async def profile(self, *, catalog: dict[str, Any]) -> dict[str, Any]: ...
 
     async def title(self, *, description: str) -> dict[str, Any]: ...
+
+
+def scenario_result(scenario: dict[str, Any], catalog: dict[str, Any], model_name: str | None) -> dict[str, Any]:
+    """One agent2 scenario as a ScenarioGeneration result (with the XOSC under "xosc").
+
+    The plan is whatever the LLM composed: an ego and any vehicles with timed actions. The critical actor comes first
+    in scenario_ir.actors, so it is the test case's adversary."""
+    plan = scenario["plan"]
+    environment = plan["environment"]
+    actors = sorted(plan.get("actors") or [], key=lambda actor: actor["id"] != plan.get("critical_actor"))
+    first_action = {}
+    for action in plan.get("actions") or []:
+        first_action.setdefault(action["actor"], action["type"])
+    metrics = plan.get("metrics") or {}
+    weather_name = environment.get("weather_preset") or ""
+    base_name = environment.get("base_preset") or weather_name
+    conditions = environment["weather_conditions"]
+    # Dust limits visibility like fog. A preset whose light was replaced (weather_preset null) is described by
+    # its weather and hour instead of the preset name, e.g. dust at night -> "fog" at 22 h.
+    weather_label = ("heavy_rain" if "HardRain" in base_name else "rain" if "rain" in conditions
+                     else "fog" if {"fog", "dust"} & set(conditions) else "clear")
+    ir = {
+        "name": f"scenario_{scenario['scenario_id']}", "title": plan.get("title"), "map_name": scenario["snapshot"]["map_name"],
+        "ego": {"road_type": "urban_road", "blueprint": plan["ego"]["blueprint_id"], "speed_kmh": plan["ego"]["speed_kmh"]},
+        "actors": [{"id": actor["id"], "actor_type": actor["kind"], "blueprint": actor["blueprint_id"],
+                    "speed_kmh": actor["speed_kmh"], "trigger": first_action.get(actor["id"]),
+                    "critical": actor["id"] == plan.get("critical_actor")} for actor in actors],
+        "weather": weather_label, "time_of_day_hour": environment["time_of_day_hour"],
+        "weather_preset": environment.get("weather_preset"),
+        "expected_outcome": {"expected_verdict": "COLLISION_EXPECTED" if plan.get("expected") == "collision" else "UNKNOWN"},
+    }
+    return {
+        "generation_mode": "agent2_llm_scenario", "model": model_name,
+        "scenario_ir": ir, "interpretation": {"scenario_type": "llm_composed", "title": plan.get("title")},
+        "validation": {"is_valid": True, "verdict": "VALID", "issues": [], "incident": metrics},
+        "threat_score": {}, "grounding": {"map_name": scenario["snapshot"]["map_name"], "site_id": scenario["site_id"],
+                                            "ego": {"blueprint": plan["ego"]["blueprint_id"]}},
+        "xosc_validation": {"well_formed": True, "schema_checked": False},
+        "retrieved_regulations": [], "warnings": [], "usage": {},
+        "xosc": scenario["xosc"], "xosc_sha256": scenario["xosc_sha256"],
+    }
 
 
 class HttpAgentClient:
@@ -34,11 +75,11 @@ class HttpAgentClient:
     async def generate(
         self, *, prompt: str, catalog: dict[str, Any], auto_repair: bool, seed: int | None,
         constraints: dict[str, Any] | None = None, snapshot_id: int | None = None,
-        content_hash: str | None = None, environment_code: str | None = None,
+        content_hash: str | None = None, environment_code: str | None = None, save_to: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        """`save_to` (project, user, request hash) lets agent2's save node store the result through the internal
+        endpoint; the answer then carries the stored `generation_id`."""
         selected = constraints or {}
-        if selected.get("actor_type") not in (None, "motorcycle"):
-            raise GenerationRejected("Agent2 chỉ hỗ trợ xe máy tạt đầu ô tô.", {}, "UNSUPPORTED_ACTOR")
         raw = json.dumps([prompt, catalog.get("map_name"), seed, selected], sort_keys=True, ensure_ascii=False)
         session_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
         ref_hash = content_hash or catalog.get("content_hash") or hashlib.sha256(
@@ -56,7 +97,7 @@ class HttpAgentClient:
             conditions, lighting = [], None
         payload = {
             "session_id": session_id, "prompt": prompt, "target_count": 1, "seed": seed,
-            "max_proposal_attempts": 3 if auto_repair else 1,
+            "max_proposal_attempts": 5 if auto_repair else 1,
             "selected_snapshots": [{
                 "ref": {"snapshot_id": snapshot_id or 1, "map_name": catalog["map_name"], "content_hash": ref_hash},
                 "catalog": catalog,
@@ -64,37 +105,18 @@ class HttpAgentClient:
             "ego_blueprint_id": selected.get("ego_blueprint"),
             "weather_preset": weather_preset,
             "weather_conditions": conditions, "lighting": lighting,
+            # The kind of road user the form locked for the actor causing the incident; agent2 checks it.
+            "actor_type": selected.get("actor_type"),
+            "save_to": save_to,
         }
         response = await self._post("/v1/scenarios/generate", payload)
         if not response.get("scenarios"):
             raise GenerationRejected("Agent2 không sinh được kịch bản hợp lệ.", response, "NO_VALID_SCENARIO")
         scenario = response["scenarios"][0]
-        plan = scenario["plan"]
-        environment = plan["environment"]
-        site = next((item for item in catalog.get("cut_in_sites") or [] if item["site_id"] == scenario["site_id"]), {})
-        tags = site.get("location_tags", [])
-        road_type = "urban_curve" if "curve" in tags else "urban_straight"
-        weather_name = environment.get("weather_preset") or ""
-        weather_label = "heavy_rain" if "HardRain" in weather_name else "rain" if "rain" in environment["weather_conditions"] else "fog" if "fog" in environment["weather_conditions"] else "clear"
-        ir = {
-            "name": f"motorcycle_cut_in_{scenario['scenario_id']}", "map_name": scenario["snapshot"]["map_name"],
-            "ego": {"road_type": road_type, "blueprint": plan["ego_blueprint_id"]},
-            "actors": [{"actor_type": "motorcycle", "trigger": "lane_change", "blueprint": plan["motorcycle_blueprint_id"]}],
-            "weather": weather_label, "time_of_day_hour": environment["time_of_day_hour"],
-            "weather_preset": environment.get("weather_preset"),
-            "expected_outcome": {"expected_verdict": "UNKNOWN"},
-        }
-        return {
-            "generation_mode": "agent2_cut_in", "model": response.get("model_name"),
-            "scenario_ir": ir, "interpretation": {"scenario_type": "motorcycle_cut_in"},
-            "validation": {"is_valid": True, "verdict": "VALID", "issues": scenario["validation"]["issues"]},
-            "threat_score": {}, "grounding": {"map_name": scenario["snapshot"]["map_name"],
-                                                "site_id": scenario["site_id"],
-                                                "ego": {"blueprint": plan["ego_blueprint_id"]}},
-            "xosc_validation": {"well_formed": True, "schema_checked": False},
-            "retrieved_regulations": [], "warnings": [], "usage": {},
-            "xosc": scenario["xosc"], "xosc_sha256": scenario["xosc_sha256"],
-        }
+        result = scenario_result(scenario, catalog, response.get("model_name"))
+        if scenario.get("generation_id") is not None:
+            result["generation_id"] = scenario["generation_id"]
+        return result
 
     async def refine(self, *, spec: dict[str, Any], catalog: dict[str, Any], seed: int | None) -> dict[str, Any]:
         raise GenerationRejected("Biểu mẫu refine cũ chưa có hợp đồng tương ứng cho tình huống tạt đầu của agent2.", {}, "UNSUPPORTED_FORM")

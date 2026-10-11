@@ -1,155 +1,171 @@
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
+import json
 
-from app.contracts import GenerationRequest
-from app.cut_in.model import CutInPlan, PromptConstraints
-from app.graph import run_graph
+from app.graph import MAX_LLM_TURNS
+from app.llm.tools import REJECT_TOOL, SUBMIT_TOOL
 from app.llm.client import LLMCallError
 from app.service import generate
-from test_sample import snapshot
-from test_service import FakeLLM
+from test_service import FAR, READS, VALID, FakeBackend, ScriptedLLM, request
+
+SAVE_TO = {"project_id": 3, "user_id": 8, "prompt": "Xe máy tạt đầu ô tô", "request_hash": "h"}
 
 
-def request(*, target_count: int = 1, max_proposal_attempts: int = 3) -> GenerationRequest:
-    return GenerationRequest(
-        session_id="graph-session", prompt="Xe máy tạt đầu ô tô", seed=17,
-        selected_snapshots=[snapshot("Town01", 1, presets=["ClearNoon"])],
-        target_count=target_count, max_proposal_attempts=max_proposal_attempts,
-        weather_preset="ClearNoon",
-    )
+def tool_answers(llm: ScriptedLLM, turn: int) -> list[dict]:
+    """Tool results the LLM saw at the start of `turn` (1-based), parsed."""
+    messages = llm.sent[turn - 1]["messages"]
+    tail = []
+    for message in reversed(messages):
+        if message["role"] != "tool":
+            break
+        tail.insert(0, json.loads(message["content"]))
+    return tail
 
 
-def test_graph_routes_recoverable_validation_back_to_llm() -> None:
-    class RepairLLM(FakeLLM):
-        def __init__(self):
-            self.feedbacks = []
-
-        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
-            self.feedbacks.append(feedback or [])
-            offset = 0 if len(self.feedbacks) == 1 else 10
-            return CutInPlan.model_validate({**variant.context.model_dump(),
-                                             "motorcycle_start_offset_m": offset,
-                                             "trigger_time_s": 0.5,
-                                             "lane_change_duration_s": 2,
-                                             "desired_lead_gap_m": 5})
-
-    llm = RepairLLM()
-    result = generate(request(), llm)
-    assert result.status == "completed"
-    assert len(llm.feedbacks) == 2
-    assert any("INSUFFICIENT_LEAD_GAP" in item for item in llm.feedbacks[1])
-
-
-def test_graph_stops_after_configured_attempt_limit() -> None:
-    class InvalidLLM(FakeLLM):
-        calls = 0
-
-        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
-            self.calls += 1
-            return CutInPlan.model_validate({**variant.context.model_dump(),
-                                             "motorcycle_start_offset_m": 0,
-                                             "trigger_time_s": 0.5,
-                                             "lane_change_duration_s": 2,
-                                             "desired_lead_gap_m": 5})
-
-    llm = InvalidLLM()
-    result = generate(request(max_proposal_attempts=2), llm)
-    # Two LLM tries, then the numbers are repaired by computation instead of losing the variant.
-    assert llm.calls == 2 and result.status == "completed"
-    plan = result.scenarios[0].plan
-    assert plan.motorcycle_start_offset_m > 0 and plan.desired_lead_gap_m == 5 and plan.trigger_time_s == 0.5
-
-
-def test_graph_does_not_retry_site_error_with_llm() -> None:
-    class CountingLLM(FakeLLM):
-        calls = 0
-
-        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
-            self.calls += 1
-            return super().propose_maneuver(prompt, variant, feedback=feedback)
-
-    selected = snapshot("Town01", 1, presets=["ClearNoon"])
-    selected.catalog.cut_in_sites[0].ego_s = None
-    body = request().model_copy(update={"selected_snapshots": [selected]})
-    llm = CountingLLM()
-    result = generate(body, llm)
-    assert result.status == "failed" and llm.calls == 1
-    assert "SITE_POSITION_UNAVAILABLE" in result.map_failures[0].message
-
-
-def test_graph_covers_selected_maps_and_keeps_catalog_out_of_state() -> None:
-    body = request(target_count=2).model_copy(update={
-        "selected_snapshots": [snapshot("Town01", 1, presets=["ClearNoon"]),
-                               snapshot("Town03", 2, presets=["ClearNoon"])]
-    })
-    state = run_graph(body, FakeLLM(), seed=17)
-    assert state["status"] == "completed"
-    assert {item.snapshot.map_name for item in state["scenarios"]} == {"Town01", "Town03"}
-    assert "selected_snapshots" not in state and "catalog" not in state
-
-
-def test_unclear_prompt_still_generates_and_keeps_the_note() -> None:
-    class AmbiguousLLM(FakeLLM):
-        def extract_constraints(self, prompt, *, tools=None, map_names=None, environments=None):
-            return PromptConstraints(ambiguities=["Tốc độ này thuộc xe nào?"])
-
-    result = generate(request(), AmbiguousLLM())
+def test_reads_in_parallel_then_submits_builds_and_saves() -> None:
+    llm, backend = ScriptedLLM([READS, [(SUBMIT_TOOL, VALID)]]), FakeBackend()
+    result = generate(request(save_to=SAVE_TO), llm, backend)
     assert result.status == "completed" and len(result.scenarios) == 1
-    assert result.clarification_questions == ["Tốc độ này thuộc xe nào?"]
+    scenario = result.scenarios[0]
+    assert scenario.generation_id == 99 and "<OpenSCENARIO>" in scenario.xosc
+    assert scenario.plan.ego.blueprint_id == "vehicle.tesla.model3" and scenario.plan.environment.weather_preset == "ClearNoon"
+    assert scenario.site_id == "1:-1:20" and scenario.plan.metrics["min_ttc_s"] <= 3
+    # Prefetch read the inventories from the Backend; the two lane-graph reads of turn 1 needed no Backend call.
+    assert sorted(name for name, _ in backend.calls) == ["summary", "vehicles", "weather"]
+    assert [answer["road_id"] for answer in tool_answers(llm, 2)[1:]] == [1] and len(tool_answers(llm, 2)) == 2
+    saved = backend.saved[0]
+    assert saved["save_to"] == SAVE_TO and saved["snapshot_id"] == 1 and saved["model_name"] == "test-llm"
+    assert saved["scenario"]["xosc_sha256"] == scenario.xosc_sha256
 
 
-def test_sessions_are_isolated_and_multi_variant_run_exceeds_default_graph_limit() -> None:
-    first = request(target_count=6)
-    second = first.model_copy(update={"session_id": "another-session", "seed": 18})
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        a = pool.submit(generate, first, FakeLLM())
-        b = pool.submit(generate, second, FakeLLM())
-        first_result, second_result = a.result(), b.result()
-    assert first_result.status == second_result.status == "completed"
-    assert len(first_result.scenarios) == len(second_result.scenarios) == 6
-    assert {item.scenario_id for item in first_result.scenarios}.isdisjoint(
-        item.scenario_id for item in second_result.scenarios
-    )
+def test_without_save_to_the_scenario_is_only_returned() -> None:
+    backend = FakeBackend()
+    result = generate(request(), ScriptedLLM([READS, [(SUBMIT_TOOL, VALID)]]), backend)
+    assert result.status == "completed" and result.scenarios[0].generation_id is None and backend.saved == []
 
 
-def test_failure_on_one_map_keeps_valid_scenario_from_other_map() -> None:
-    class OneMapFailsLLM(FakeLLM):
-        def propose_maneuver(self, prompt, variant, *, feedback=None, tools=None):
-            if variant.site.snapshot.map_name == "Town03":
-                raise LLMCallError("LLM_REFUSAL", "Không có đề xuất cho map này.")
-            return super().propose_maneuver(prompt, variant, feedback=feedback)
-
-    body = request(target_count=2).model_copy(update={
-        "selected_snapshots": [snapshot("Town01", 1, presets=["ClearNoon"]),
-                               snapshot("Town03", 2, presets=["ClearNoon"])]
-    })
-    result = generate(body, OneMapFailsLLM())
-    assert result.status == "partial"
-    assert [item.snapshot.map_name for item in result.scenarios] == ["Town01"]
-    assert [(item.snapshot.map_name, item.code) for item in result.map_failures] == [("Town03", "NO_VALID_PLAN")]
+def test_a_scenario_with_no_incident_goes_back_to_the_llm_with_the_numbers() -> None:
+    llm = ScriptedLLM([READS, [(SUBMIT_TOOL, FAR)], [(SUBMIT_TOOL, VALID)]])
+    result = generate(request(), llm, FakeBackend())
+    assert result.status == "completed" and len(llm.sent) == 3
+    [feedback] = tool_answers(llm, 3)
+    # A cut-in prompt: merging 250 m ahead is reported as too far, with a start and time found by simulation.
+    assert feedback["valid"] is False and [issue["code"] for issue in feedback["issues"]] == ["CUT_IN_TOO_FAR"]
+    assert "đã thử bằng mô phỏng: đạt" in feedback["issues"][0]["message"]
 
 
-def test_prompt_llm_error_fails_all_selected_maps_before_site_search() -> None:
-    class BrokenLLM(FakeLLM):
-        def extract_constraints(self, prompt, *, tools=None, map_names=None, environments=None):
+def test_facts_missing_from_the_catalog_are_reported_back() -> None:
+    wrong = {**VALID, "weather_preset": "Snow", "ego": {**VALID["ego"], "blueprint_id": "vehicle.audi.a2"},
+             "actors": [{**VALID["actors"][0], "blueprint_id": "vehicle.made.up"}]}
+    llm = ScriptedLLM([READS, [(SUBMIT_TOOL, wrong)], [(SUBMIT_TOOL, VALID)]])
+    assert generate(request(), llm, FakeBackend()).status == "completed"
+    codes = {issue["code"] for issue in tool_answers(llm, 3)[0]["issues"]}
+    assert codes == {"UNKNOWN_BLUEPRINT", "WEATHER_NOT_AVAILABLE", "EGO_LOCKED"}
+
+
+def test_the_run_fails_after_the_attempts() -> None:
+    llm = ScriptedLLM([[(SUBMIT_TOOL, FAR)]] * 5)
+    result = generate(request(), llm, FakeBackend())
+    assert result.status == "failed" and result.map_failures[0].code == "NO_VALID_PLAN"
+    assert "CUT_IN_TOO_FAR" in result.map_failures[0].message
+
+
+def test_reject_request_ends_the_run_without_searching() -> None:
+    llm, backend = ScriptedLLM([[(REJECT_TOOL, {"quote": "trời có tuyết", "reason": "tuyết ngoài miền hỗ trợ"})]]), FakeBackend()
+    result = generate(request(prompt="Xe máy tạt đầu ô tô khi trời có tuyết"), llm, backend)
+    assert result.status == "failed" and result.map_failures[0].code == "UNSUPPORTED_REQUIREMENT"
+    assert "trời có tuyết" in result.map_failures[0].message and "search_sites" not in [name for name, _ in backend.calls]
+
+
+def test_the_last_turn_must_submit() -> None:
+    llm = ScriptedLLM([[READS[1]]] * (MAX_LLM_TURNS - 1))
+    result = generate(request(), llm, FakeBackend())
+    assert result.status == "completed" and len(llm.sent) == MAX_LLM_TURNS
+    assert llm.sent[-1]["tool_choice"] == {"type": "function", "function": {"name": SUBMIT_TOOL}}
+    assert all(item["tool_choice"] == "required" for item in llm.sent[:-1])
+
+
+def test_llm_error_and_save_error_fail_the_run() -> None:
+    class Broken(ScriptedLLM):
+        def chat(self, messages, tools, tool_choice="required"):
             raise LLMCallError("LLM_EMPTY_RESPONSE", "Không có dữ liệu.")
 
-    result = generate(request(), BrokenLLM())
-    assert result.status == "failed" and not result.scenarios
-    assert result.map_failures[0].code == "LLM_EMPTY_RESPONSE"
+    assert generate(request(), Broken([]), FakeBackend()).map_failures[0].code == "LLM_EMPTY_RESPONSE"
+    result = generate(request(save_to=SAVE_TO), ScriptedLLM([[(SUBMIT_TOOL, VALID)]]), FakeBackend(save_error=True))
+    assert result.status == "failed" and result.scenarios == [] and result.map_failures[0].code == "SAVE_FAILED"
 
 
-def test_weather_in_the_prompt_wins_over_the_picked_environment() -> None:
-    class RainLLM(FakeLLM):
-        def extract_constraints(self, prompt, *, tools=None, map_names=None, environments=None):
-            return PromptConstraints(weather_conditions=["rain"])
-
-    # The form picked "clear" (ClearNoon, sunny): merging it with the prompt's rain matched no preset before.
-    body = GenerationRequest(session_id="rain", prompt="xe máy tạt đầu ô tô trời mưa tầm tã", seed=3, target_count=1,
-                             selected_snapshots=[snapshot("Town01", 1)], weather_preset="ClearNoon", weather_conditions=["sunny"])
-    result = generate(body, RainLLM())
+def test_two_submits_in_one_turn_answer_every_call() -> None:
+    llm = ScriptedLLM([[(SUBMIT_TOOL, VALID), (SUBMIT_TOOL, VALID)]])
+    result = generate(request(), llm, FakeBackend())
     assert result.status == "completed"
-    assert result.scenarios[0].plan.environment.weather_preset == "HardRainNight"
-    # A prompt silent on weather keeps the picked one.
-    assert generate(body.model_copy(update={"session_id": "picked"}), FakeLLM()).scenarios[0].plan.environment.weather_preset == "ClearNoon"
+
+
+def test_rejecting_the_supported_scenario_itself_is_sent_back_to_the_llm() -> None:
+    # Seen live: filters the user never asked for found 0 sites, then the model rejected the whole prompt.
+    give_up = (REJECT_TOOL, {"quote": "xe máy tạt đầu ô tô ego", "reason": "Không tìm thấy site tạt đầu nào phù hợp."})
+    llm = ScriptedLLM([[give_up], READS, [(SUBMIT_TOOL, VALID)]])
+    result = generate(request(prompt="xe máy tạt đầu ô tô ego"), llm, FakeBackend())
+    assert result.status == "completed" and len(llm.sent) == 3
+    [refused] = tool_answers(llm, 2)
+    assert "không được từ chối" in refused["error"] and "tìm lại" in refused["error"]
+
+
+def test_reject_problem_accepts_only_a_quoted_unsupported_requirement() -> None:
+    from app.llm.tools import reject_problem
+
+    prompt = "Xe máy tạt đầu ô tô trên cao tốc khi trời có tuyết"
+    assert reject_problem("trời có tuyết", prompt) is None
+    assert reject_problem("người đi bộ băng qua", "người đi bộ băng qua đường") is None
+    assert reject_problem("Xe máy tạt đầu ô tô", prompt) is not None
+    assert reject_problem("xe tải phanh gấp", "xe tải phanh gấp trước ô tô") is not None  # vehicles: supported
+    # Seen live: the whole prompt quoted to give up; weather and light are buildable too.
+    live = "xe máy và ô tô tạt đầu xe ego vào lúc trời bụi mù vào ban đêm"
+    assert reject_problem(live, live) is not None
+    assert reject_problem("trên cao tốc", prompt) is not None
+    assert reject_problem("mưa đá", prompt) is not None  # not in the prompt
+
+
+def test_prefetch_gives_whole_lists_in_a_neutral_order_and_picks_nothing() -> None:
+    llm, backend = ScriptedLLM([READS, [(SUBMIT_TOOL, VALID)]]), FakeBackend()
+    generate(request(), llm, backend)
+    catalog = json.loads(llm.sent[0]["messages"][1]["content"])["catalog"]["Town01"]
+    assert catalog["weather_presets"] == ["ClearNoon", "HardRainNight"]
+    assert {item["kind"] for item in catalog["vehicles"]} == {"car", "motorcycle"}  # every kind, not a pick
+    assert [item["id"] for item in catalog["ego"]] == ["vehicle.tesla.model3"]  # the locked ego only
+    assert catalog["summary"]["tags"] == {"straight": 1} and "sites" not in catalog
+    # No seed: the lists are not reordered per variant.
+    assert all(args[1] is None for name, args in backend.calls if name == "vehicles")
+    # Without a locked ego the whole car list is offered.
+    llm = ScriptedLLM([READS, [(SUBMIT_TOOL, {**VALID, "ego": {**VALID["ego"], "blueprint_id": "vehicle.tesla.model3"}})]])
+    generate(request(ego_blueprint_id=None), llm, FakeBackend())
+    ego = json.loads(llm.sent[0]["messages"][1]["content"])["catalog"]["Town01"]["ego"]
+    assert [item["id"] for item in ego] == ["vehicle.audi.a2", "vehicle.tesla.model3"]
+
+
+def test_prefetch_failure_stops_before_the_llm() -> None:
+    llm = ScriptedLLM([])
+    result = generate(request(), llm, FakeBackend(down=True))
+    assert result.status == "failed" and result.map_failures[0].code == "CATALOG_UNAVAILABLE" and llm.sent == []
+
+
+def test_a_locked_pedestrian_is_refused_before_the_llm() -> None:
+    llm = ScriptedLLM([])
+    result = generate(request(actor_type="pedestrian"), llm, FakeBackend())
+    assert result.status == "failed" and result.map_failures[0].code == "UNSUPPORTED_ACTOR" and llm.sent == []
+
+
+
+def test_a_map_that_cannot_host_the_prompt_is_reported_for_the_builder_to_move_on() -> None:
+    from world import snapshot
+
+    give_up = (REJECT_TOOL, {"quote": "xe máy tạt đầu ô tô", "reason": "Map không có làn bên cạnh."})
+    llm = ScriptedLLM([[give_up]])
+    # Another snapshot id: lane graphs are cached by content hash.
+    single = request(selected_snapshots=[snapshot("Town01", 9, presets=["ClearNoon"], single_lane=True)])
+    result = generate(single, llm, FakeBackend())
+    assert result.status == "failed" and result.map_failures[0].code == "LOCATION_NOT_AVAILABLE"
+    # The same rejection on a map with adjacent lanes is sent back to the model instead.
+    llm = ScriptedLLM([[give_up], [(SUBMIT_TOOL, VALID)]])
+    assert generate(request(), llm, FakeBackend()).status == "completed"
+    assert json.loads(llm.sent[0]["messages"][1]["content"])["catalog"]["Town01"]["can_host"]["multi_lane"] is True

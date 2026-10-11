@@ -9,7 +9,8 @@ from typing import Any
 from app.shared.infrastructure.models import DangerLevel
 
 # ScenarioIR actor_type -> adversary_type vocabulary used by existing test cases (docs/14).
-ADVERSARY_TYPES = {"car": "car", "motorcycle": "motorcycle", "bicycle": "cyclist", "pedestrian": "pedestrian", "truck": "truck"}
+ADVERSARY_TYPES = {"car": "car", "motorcycle": "motorcycle", "bicycle": "cyclist", "pedestrian": "pedestrian", "truck": "truck",
+                   "van": "car", "bus": "truck"}
 
 # weighted_threat (0..1, ScenGE 5D threat score) -> danger level. Thresholds are a starting point,
 # chosen from the spread of generated scenarios, not a calibrated standard.
@@ -74,7 +75,7 @@ def suggested_metadata(result: dict[str, Any]) -> dict[str, Any]:
 
 # ---------------------------------------------------------------- metadata -> Agent constraints
 # The reverse direction: the 5 metadata a creator picked on /test-cases/new become generation
-# constraints for the Backend adapter. Agent2 accepts only motorcycle cut-ins.
+# constraints for the Backend adapter; agent2 checks the locked actor kind.
 ACTOR_FROM_ADVERSARY = {
     "pedestrian": "pedestrian", "motorcycle": "motorcycle", "cyclist": "bicycle",
     "car": "car", "van": "car", "truck": "truck", "bus": "truck",

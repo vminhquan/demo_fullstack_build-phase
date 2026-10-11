@@ -222,7 +222,7 @@ async def run_variant(
                 GenerationCreate(
                     prompt=builder.prompt,
                     catalog_source=builder.catalog_source,
-                    # Variants differ through the seed: agent2 samples site, speeds and weather from it.
+                    # Variants differ through the seed: agent2's catalog tools order sites, vehicles by it for the LLM to pick.
                     seed=variant.no,
                     catalog_snapshot_id=variant.catalog_snapshot_id,
                     # The map pins the CARLA data; each ticked value constrains the Agent, the rest is its choice.

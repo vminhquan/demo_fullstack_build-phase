@@ -1,32 +1,46 @@
-"""API contracts and LangGraph state for the new scenario generator.
+"""API contracts and LangGraph state for the scenario generator.
 
-The request carries complete catalogs for validation. GraphState keeps only
-their immutable references; nodes receive catalogs through GraphContext so
-checkpointing does not duplicate large waypoint arrays.
+The request carries complete catalogs for validation and XOSC export. GraphState keeps the chat with the LLM and
+small results; catalogs reach the nodes through GraphContext so checkpointing does not copy waypoint arrays.
 """
 
 from __future__ import annotations
 
 from typing import Any, Literal, NotRequired, TypedDict
 
-from app.catalog.models import CutInSite, SelectedSnapshot, SnapshotRef
-from app.cut_in.model import CutInPlan, PromptConstraints, ValidationResult
+from app.catalog.models import SelectedSnapshot, SnapshotRef
+from app.scenario.spec import ScenarioPlan
 from pydantic import BaseModel, Field, model_validator
 
 GenerationStatus = Literal["completed", "partial", "failed", "needs_clarification"]
+
+
+class SaveTarget(BaseModel):
+    """Who the stored generation belongs to; set by the Backend and sent back unchanged by the save node."""
+
+    project_id: int = Field(gt=0)
+    user_id: int = Field(gt=0)
+    prompt: str = Field(min_length=1)
+    request_hash: str | None = None
 
 
 class GenerationRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=100)
     prompt: str = Field(min_length=3, max_length=4000)
     selected_snapshots: list[SelectedSnapshot] = Field(min_length=1, max_length=20)
-    target_count: int = Field(ge=1, le=100)
+    # One run makes one scenario; the Backend's Builder runs the graph once per variant (10 per session).
+    target_count: int = Field(default=1, ge=1, le=1)
     seed: int | None = Field(default=None, ge=0)
-    max_proposal_attempts: int = Field(default=3, ge=1, le=3)
+    # Submissions checked per run; the simulation feedback usually needs a few rounds.
+    max_proposal_attempts: int = Field(default=5, ge=1, le=5)
     ego_blueprint_id: str | None = None
     weather_preset: str | None = None
     weather_conditions: list[str] = Field(default_factory=list)
     lighting: str | None = None
+    # Kind of road user the form locked for the one causing the incident (motorcycle, car, truck, bicycle...).
+    actor_type: str | None = None
+    # Unset: the scenario is only returned, not stored (tests, local runs).
+    save_to: SaveTarget | None = None
 
     @model_validator(mode="after")
     def unique_selected_maps(self) -> GenerationRequest:
@@ -48,18 +62,18 @@ class GeneratedScenario(BaseModel):
     scenario_id: str = Field(min_length=1)
     variant_no: int = Field(ge=1)
     snapshot: SnapshotRef
+    # Ego start "road:lane:s".
     site_id: str = Field(min_length=1)
-    plan: CutInPlan
-    validation: ValidationResult
+    plan: ScenarioPlan
     xosc: str = Field(min_length=1)
     xosc_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    # Id of the Backend ScenarioGeneration row the save node wrote; None when the request had no save_to.
+    generation_id: int | None = None
 
     @model_validator(mode="after")
     def matches_plan(self) -> GeneratedScenario:
-        if self.site_id != self.plan.site_id:
+        if self.site_id != self.plan.start_id:
             raise ValueError("Generated site_id does not match the plan")
-        if not self.validation.valid:
-            raise ValueError("A generated XOSC requires a valid cut-in plan")
         return self
 
 
@@ -90,27 +104,18 @@ class GenerationResponse(BaseModel):
 
 
 class GraphState(TypedDict):
-    """Per-session state. Nodes update only the keys they produce."""
+    """Per-run state. Nodes update only the keys they produce."""
 
     session_id: str
-    prompt: str
-    snapshot_refs: list[SnapshotRef]
-    target_count: int
     seed: int
-    max_proposal_attempts: int
-    constraints: NotRequired[PromptConstraints]
-    sites: NotRequired[list[CutInSite]]
-    sampled_variants: NotRequired[list[dict[str, Any]]]
-    variant_index: NotRequired[int]
-    current_plan: NotRequired[CutInPlan | None]
-    validation: NotRequired[ValidationResult | None]
-    feedback: NotRequired[list[str]]
-    scenarios: NotRequired[list[GeneratedScenario]]
-    map_failures: NotRequired[list[MapFailure]]
-    clarification_questions: NotRequired[list[str]]
-    # False when the prompt named its own weather/light/surface, so the request's picked environment is ignored.
-    use_request_environment: NotRequired[bool]
-    proposal_attempts: NotRequired[int]
+    # OpenAI chat messages: system, user, then assistant tool calls and their tool results.
+    messages: list[dict[str, Any]]
+    llm_turns: int
+    submit_attempts: int
+    # The submit_scenario call waiting for build_xosc: {"id": ..., "arguments": "<json>"}.
+    pending_submit: NotRequired[dict[str, str] | None]
+    scenario: NotRequired[GeneratedScenario | None]
+    map_failures: list[MapFailure]
     status: NotRequired[GenerationStatus]
 
 
@@ -120,5 +125,7 @@ class GraphContext(TypedDict):
     selected_snapshots: list[SelectedSnapshot]
     request: GenerationRequest
     llm: Any
-    # Backend catalog reads for tool calls (app.llm.tools.CatalogApi); None when BACKEND_URL is not set.
+    # Backend endpoints (app.llm.tools.CatalogApi): the catalog reads behind the tools, and the save.
     catalog_api: Any
+    # Lane graph of each selected map (app.scenario.lanes.LaneGraph), built once per run from its waypoints.
+    lane_graphs: Any

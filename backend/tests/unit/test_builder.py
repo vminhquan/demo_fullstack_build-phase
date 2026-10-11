@@ -19,11 +19,11 @@ def test_always_plans_ten_variants_spread_over_the_maps() -> None:
 def test_ticked_values_cycle_by_variant_and_empty_categories_stay_with_the_agent() -> None:
     maps = [BuilderMapOptions(map_code="Town03", environment_codes=["rain", "fog", "clear"], danger_levels=["HIGH"]),
             BuilderMapOptions(map_code="Town04")]
-    town03 = [variant for variant in plan_variants(maps) if variant.map_code == "Town03"]  # variants 1, 3, 5, 7, 9
+    town03 = [variant for variant in plan_variants(maps, 10) if variant.map_code == "Town03"]  # variants 1, 3, 5, 7, 9
     assert [variant.environment_code for variant in town03] == ["rain", "clear", "fog", "rain", "clear"]
     assert {variant.danger_level for variant in town03} == {"HIGH"}
     assert all(variant.ego_vehicle_code is None and variant.adversary_type is None for variant in town03)
-    town04 = [variant for variant in plan_variants(maps) if variant.map_code == "Town04"]
+    town04 = [variant for variant in plan_variants(maps, 10) if variant.map_code == "Town04"]
     assert all(variant.environment_code is None and variant.danger_level is None for variant in town04)
 
 
@@ -80,14 +80,14 @@ async def test_variants_leave_maps_that_cannot_host_the_description(monkeypatch)
     monkeypatch.setattr(service, "run_variant", fake_run)
     monkeypatch.setattr(service, "record_error", fake_record)
     routing = service.MapRouting(maps)
-    for variant in plan_variants(maps):
+    for variant in plan_variants(maps, 10):
         await service.run_routed(1, None, None, None, variant, routing)
     assert recorded == []  # every variant ended on Town03
     assert sorted(routing.unfit) == ["Town01", "Town04"]
     landed = {}
     for no, code in tried:
         landed[no] = code
-    assert set(landed.values()) == {"Town03"} and len(landed) == TARGET_COUNT
+    assert set(landed.values()) == {"Town03"} and len(landed) == 10
     # Once a map is known not to fit, later variants skip it without calling the Agent.
     assert sum(code == "Town04" for _, code in tried) == 1 and sum(code == "Town01" for _, code in tried) == 1
 
@@ -123,4 +123,4 @@ def test_many_maps_still_cover_every_ticked_environment() -> None:
     ticked = ["clear", "rain", "heavy_rain", "fog", "night", "dusk", "HardRainNight", "ClearNoon", "WetSunset", "DustStorm"]
     maps = [BuilderMapOptions(map_code=f"Town{index:02d}", environment_codes=ticked) for index in range(12)]
     # One variant per map: before, every one took the first ticked value ("clear").
-    assert [variant.environment_code for variant in plan_variants(maps)] == ticked
+    assert [variant.environment_code for variant in plan_variants(maps, 10)] == ticked

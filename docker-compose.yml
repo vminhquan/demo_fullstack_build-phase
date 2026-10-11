@@ -15,7 +15,8 @@ services:
     build: ./backend
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://scenario:${DB_PASSWORD}@postgres:5432/scenario_forge
+      # DATABASE_URL from .env (Render DB); unset it to fall back to the local postgres container.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://scenario:${DB_PASSWORD}@postgres:5432/scenario_forge}
       AGENT_SERVICE_URL: http://agent2:8100
     ports:
       - "8000:8000"
@@ -33,12 +34,15 @@ services:
     build: ./backend
     env_file: .env
     environment:
-      DATABASE_URL: postgresql+asyncpg://scenario:${DB_PASSWORD}@postgres:5432/scenario_forge
+      # DATABASE_URL from .env (Render DB); unset it to fall back to the local postgres container.
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://scenario:${DB_PASSWORD}@postgres:5432/scenario_forge}
     # Migrations, then the shipped default CARLA data (idempotent).
     command: ["sh", "-c", "alembic upgrade head && python -m app.seed_catalog"]
     depends_on:
       postgres:
         condition: service_healthy
+        # Local postgres only starts with --profile local-db.
+        required: false
     restart: "no"
 
   agent2:
@@ -51,6 +55,9 @@ services:
       BACKEND_URL: http://backend:8000
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       AGENT2_MODEL_NAME: ${AGENT2_MODEL_NAME:-gpt-4o-mini}
+      # INFO: every LLM turn, tool call and result; DEBUG adds the system prompt and the XOSC.
+      AGENT2_LOG_LEVEL: ${AGENT2_LOG_LEVEL:-INFO}
+      AGENT2_LOG_MAX_CHARS: ${AGENT2_LOG_MAX_CHARS:-4000}
     expose:
       - "8100"
     healthcheck:
@@ -62,6 +69,8 @@ services:
 
   postgres:
     image: pgvector/pgvector:pg17
+    # Local DB, kept for reuse: docker compose --profile local-db up (and unset DATABASE_URL in .env).
+    profiles: ["local-db"]
     environment:
       POSTGRES_DB: scenario_forge
       POSTGRES_USER: scenario

@@ -242,37 +242,59 @@ def test_labels_are_readable() -> None:
     assert vehicle_label("vehicle.mercedes.coupe_2020") == "Mercedes Coupe 2020"
 
 
-def test_agent_client_maps_cut_in_request_and_response(monkeypatch) -> None:
+def test_agent_client_maps_any_composed_scenario(monkeypatch) -> None:
     import asyncio
 
     import httpx
 
     from app.modules.generation.agent_client import HttpAgentClient
+    from app.modules.generation.mapping import suggested_metadata
 
     calls: list[tuple[str, dict]] = []
+    plan = {
+        "title": "Xe tải chen vào làn rồi phanh", "critical_actor": "truck1", "expected": "near_miss", "duration_s": 8,
+        "ego": {"id": "hero", "blueprint_id": "vehicle.tesla.model3", "kind": "car", "speed_kmh": 50},
+        "actors": [{"id": "car1", "blueprint_id": "vehicle.audi.a2", "kind": "car", "speed_kmh": 40},
+                   {"id": "truck1", "blueprint_id": "vehicle.carlamotors.carlacola", "kind": "truck", "speed_kmh": 45}],
+        "actions": [{"actor": "truck1", "type": "lane_change"}, {"actor": "truck1", "type": "brake_to_stop"}],
+        "environment": {"weather_preset": "ClearNoon", "weather_conditions": ["sunny"], "time_of_day_hour": 12},
+        "metrics": {"min_ttc_s": 1.8},
+    }
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append((request.url.path, json.loads(request.content)))
         return httpx.Response(200, json={"model_name": "gpt-4o-mini", "scenarios": [{
-            "scenario_id": "abc", "snapshot": {"map_name": "Town01"}, "site_id": "site-1",
-            "plan": {"ego_blueprint_id": "vehicle.tesla.model3", "motorcycle_blueprint_id": "vehicle.yamaha.yzf",
-                     "environment": {"weather_preset": "ClearNoon", "weather_conditions": ["sunny"], "time_of_day_hour": 12}},
-            "validation": {"issues": []}, "xosc": "<OpenSCENARIO/>", "xosc_sha256": "a" * 64,
+            "scenario_id": "abc", "snapshot": {"map_name": "Town01"}, "site_id": "1:-1:20", "plan": plan,
+            "xosc": "<OpenSCENARIO/>", "xosc_sha256": "a" * 64, "generation_id": 7,
         }]})
 
     real_client = httpx.AsyncClient
     monkeypatch.setattr(httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
     client = HttpAgentClient("http://agent2", "key", 5)
-    catalog = {"map_name": "Town01", "carla_version": "0.9.16", "weather_presets": ["ClearNoon"],
-               "cut_in_sites": [{"site_id": "site-1", "location_tags": ["straight"]}]}
-    result = asyncio.run(client.generate(prompt="Xe máy tạt đầu ô tô", catalog=catalog, auto_repair=True, seed=1,
-                                         constraints={"ego_blueprint": "vehicle.tesla.model3"}, snapshot_id=42,
-                                         content_hash="b" * 64, environment_code="ClearNoon"))
-    assert calls[0][0] == "/v1/scenarios/generate"
+    catalog = {"map_name": "Town01", "carla_version": "0.9.16", "weather_presets": ["ClearNoon"]}
+    result = asyncio.run(client.generate(prompt="Xe tải tạt đầu", catalog=catalog, auto_repair=True, seed=1,
+                                         constraints={"ego_blueprint": "vehicle.tesla.model3", "actor_type": "truck"},
+                                         snapshot_id=42, content_hash="b" * 64, environment_code="ClearNoon"))
     request = calls[0][1]
     assert request["selected_snapshots"][0]["ref"] == {"snapshot_id": 42, "map_name": "Town01", "content_hash": "b" * 64}
-    assert request["ego_blueprint_id"] == "vehicle.tesla.model3" and request["weather_preset"] == "ClearNoon"
-    assert result["generation_mode"] == "agent2_cut_in" and result["scenario_ir"]["actors"][0]["actor_type"] == "motorcycle"
+    assert request["actor_type"] == "truck" and request["ego_blueprint_id"] == "vehicle.tesla.model3"
+    assert result["generation_mode"] == "agent2_llm_scenario" and result["generation_id"] == 7
+    # The critical actor comes first, so it is the test case's adversary.
+    assert [actor["actor_type"] for actor in result["scenario_ir"]["actors"]] == ["truck", "car"]
+    assert suggested_metadata(result)["adversary_type"] == "truck"
+
+
+def test_a_preset_with_replaced_light_is_described_by_weather_and_hour() -> None:
+    from app.modules.generation.agent_client import scenario_result
+    from app.modules.generation.mapping import suggested_metadata
+
+    plan = {"title": "t", "critical_actor": "m", "ego": {"blueprint_id": "vehicle.audi.a2", "speed_kmh": 50},
+            "actors": [{"id": "m", "kind": "motorcycle", "blueprint_id": "vehicle.yamaha.yzf", "speed_kmh": 40}], "actions": [],
+            "environment": {"weather_preset": None, "base_preset": "DustStorm", "weather_conditions": ["dust"], "time_of_day_hour": 22}}
+    result = scenario_result({"scenario_id": "x", "snapshot": {"map_name": "Town04"}, "site_id": "1:-1:0", "plan": plan,
+                              "xosc": "<x/>", "xosc_sha256": "a" * 64}, {}, "m")
+    assert result["scenario_ir"]["weather"] == "fog" and result["scenario_ir"]["weather_preset"] is None
+    assert suggested_metadata(result)["environment_code"] == "fog"
 
 
 @pytest.mark.parametrize(
