@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import undefer
 
+from app.modules.bridge.service import project_bridge_uid
 from app.modules.catalog.schemas import CatalogSnapshotResponse
 from app.modules.catalog.service import get_snapshot, resolve_for_generation
 from app.modules.generation.agent_client import AgentPort, get_agent
@@ -195,6 +196,7 @@ async def create_generation(
         result = {**cached.result, "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "duration_ms": 0}}
         xosc = cached.xosc
     else:
+        bridge_uid = await project_bridge_uid(session, actor.project_id)
         # Release the read transaction while the Agent works (LLM calls take seconds).
         await session.commit()
         result = await call_agent(session, actor, "GENERATE", agent.generate(
@@ -203,6 +205,7 @@ async def create_generation(
             environment_code=body.metadata.environment_code if body.metadata else None,
             # agent2's save node stores the XOSC itself through /internal/agent/scenario-generations.
             save_to={"project_id": actor.project_id, "user_id": actor.id, "prompt": body.prompt, "request_hash": key},
+            validator_bridge_uid=bridge_uid,
         ), **context)
         xosc = result.pop("xosc")
     form = None

@@ -16,6 +16,7 @@ class AgentPort(Protocol):
         self, *, prompt: str, catalog: dict[str, Any], auto_repair: bool, seed: int | None,
         constraints: dict[str, Any] | None = None, snapshot_id: int | None = None,
         content_hash: str | None = None, environment_code: str | None = None, save_to: dict[str, Any] | None = None,
+        validator_bridge_uid: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def refine(self, *, spec: dict[str, Any], catalog: dict[str, Any], seed: int | None) -> dict[str, Any]: ...
@@ -57,7 +58,9 @@ def scenario_result(scenario: dict[str, Any], catalog: dict[str, Any], model_nam
     return {
         "generation_mode": "agent2_llm_scenario", "model": model_name,
         "scenario_ir": ir, "interpretation": {"scenario_type": "llm_composed", "title": plan.get("title")},
-        "validation": {"is_valid": True, "verdict": "VALID", "issues": [], "incident": metrics},
+        # carla: the no-brain ego run on the project's Bridge (None when agent2 did not check on CARLA).
+        "validation": {"is_valid": True, "verdict": "VALID", "issues": [], "incident": metrics,
+                       "carla": scenario.get("carla_validation")},
         "threat_score": {}, "grounding": {"map_name": scenario["snapshot"]["map_name"], "site_id": scenario["site_id"],
                                             "ego": {"blueprint": plan["ego"]["blueprint_id"]}},
         "xosc_validation": {"well_formed": True, "schema_checked": False},
@@ -76,9 +79,11 @@ class HttpAgentClient:
         self, *, prompt: str, catalog: dict[str, Any], auto_repair: bool, seed: int | None,
         constraints: dict[str, Any] | None = None, snapshot_id: int | None = None,
         content_hash: str | None = None, environment_code: str | None = None, save_to: dict[str, Any] | None = None,
+        validator_bridge_uid: str | None = None,
     ) -> dict[str, Any]:
         """`save_to` (project, user, request hash) lets agent2's save node store the result through the internal
-        endpoint; the answer then carries the stored `generation_id`."""
+        endpoint; the answer then carries the stored `generation_id`. `validator_bridge_uid`: the project's Bridge,
+        on whose CARLA agent2 checks that the no-brain ego collides before saving."""
         selected = constraints or {}
         raw = json.dumps([prompt, catalog.get("map_name"), seed, selected], sort_keys=True, ensure_ascii=False)
         session_id = hashlib.sha256(raw.encode()).hexdigest()[:24]
@@ -108,6 +113,7 @@ class HttpAgentClient:
             # The kind of road user the form locked for the actor causing the incident; agent2 checks it.
             "actor_type": selected.get("actor_type"),
             "save_to": save_to,
+            "validator_bridge_uid": validator_bridge_uid,
         }
         response = await self._post("/v1/scenarios/generate", payload)
         if not response.get("scenarios"):

@@ -58,8 +58,15 @@ services:
       # INFO: every LLM turn, tool call and result; DEBUG adds the system prompt and the XOSC.
       AGENT2_LOG_LEVEL: ${AGENT2_LOG_LEVEL:-INFO}
       AGENT2_LOG_MAX_CHARS: ${AGENT2_LOG_MAX_CHARS:-4000}
-    expose:
-      - "8100"
+      # CARLA check of each valid scenario on the project's Bridge (no-brain ego must collide): off | optional | required.
+      # Bridges dial ws://<this host>:8100/v1/bridge/ws with a token the Backend signs with the same secret
+      # (Backend: AGENT_BRIDGE_WS_URL + BRIDGE_AGENT_SECRET in .env). Empty secret: no Bridge can connect.
+      BRIDGE_AGENT_SECRET: ${BRIDGE_AGENT_SECRET:-}
+      AGENT2_CARLA_VALIDATION: ${AGENT2_CARLA_VALIDATION:-optional}
+      AGENT2_CARLA_VALIDATION_TIMEOUT_S: ${AGENT2_CARLA_VALIDATION_TIMEOUT_S:-120}
+    # Published (not only exposed): the Bridge runs on the CARLA machine and connects here directly.
+    ports:
+      - "8100:8100"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8100/health')"]
       interval: 10s

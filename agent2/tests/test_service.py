@@ -105,6 +105,7 @@ def test_http_boundary_requires_key_and_backend(monkeypatch) -> None:
         agent_api_key = SecretStr("test-key")
         model_name = "test-llm"
         backend_url = None
+        carla_validation = "off"
 
     monkeypatch.setattr(api, "get_settings", Settings)
     monkeypatch.setattr(api, "from_settings", lambda settings: ScriptedLLM([READS]))
@@ -129,6 +130,7 @@ def test_an_llm_service_failure_answers_503(monkeypatch) -> None:
         agent_api_key = None
         model_name = "test-llm"
         backend_url = "http://backend"
+        carla_validation = "off"
 
     class NoCredit(ScriptedLLM):
         def chat(self, messages, tools, tool_choice="required"):

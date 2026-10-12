@@ -102,3 +102,22 @@ def test_gunzip_limited_accepts_catalogs_and_rejects_bombs_and_garbage() -> None
         gunzip_limited(bomb, limit=1_000_000)
     with pytest.raises(ValidationFailed, match="gzip"):
         gunzip_limited(b"not gzip", limit=1000)
+
+
+def test_agent_link_is_offered_only_when_configured(monkeypatch) -> None:
+    import hashlib
+    import hmac
+
+    from app.modules.bridge import service
+    from app.shared.config import Settings
+
+    monkeypatch.setattr(service, "get_settings", lambda: Settings(agent_bridge_ws_url="", bridge_agent_secret="s3cret"))
+    assert service.agent_link("BRG-1") is None
+    monkeypatch.setattr(service, "get_settings", lambda: Settings(agent_bridge_ws_url="ws://agent2:8100/v1/bridge/ws",
+                                                                    bridge_agent_secret="s3cret"))
+    link = service.agent_link("BRG-1")
+    assert link["ws_url"] == "ws://agent2:8100/v1/bridge/ws"
+    # The format agent2's verify_bridge_token checks: <bridge_uid>.<expires>.<hmac-sha256 of "<bridge_uid>.<expires>">.
+    uid, expires, signature = link["token"].rsplit(".", 2)
+    assert uid == "BRG-1" and int(expires) > 0
+    assert signature == hmac.new(b"s3cret", f"{uid}.{expires}".encode(), hashlib.sha256).hexdigest()

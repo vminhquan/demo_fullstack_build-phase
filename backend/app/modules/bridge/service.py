@@ -58,6 +58,32 @@ def hash_device_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def sign_agent_token(secret: str, bridge_uid: str, expires: int) -> str:
+    """`<bridge_uid>.<expires>.<hmac>`, verified by agent2 (app.bridges.verify_bridge_token) with the same secret."""
+    body = f"{bridge_uid}.{expires}"
+    return f"{body}.{hmac.new(secret.encode(), body.encode(), hashlib.sha256).hexdigest()}"
+
+
+def agent_link(bridge_uid: str) -> dict[str, str] | None:
+    """bridge.welcome's `agent`: where and with what token the Bridge opens its socket to agent2; None when off."""
+    settings = get_settings()
+    if not settings.agent_bridge_ws_url or not settings.bridge_agent_secret:
+        return None
+    expires = int(time.time()) + settings.agent_bridge_token_ttl_hours * 3600
+    return {"ws_url": settings.agent_bridge_ws_url, "token": sign_agent_token(settings.bridge_agent_secret, bridge_uid, expires)}
+
+
+async def project_bridge_uid(session: AsyncSession, project_id: int) -> str | None:
+    """The project's paired Bridge (a project uses one CARLA server), whose CARLA checks the generated scenarios."""
+    return await session.scalar(
+        select(Bridge.uid)
+        .join(BridgeConnection, BridgeConnection.bridge_id == Bridge.id)
+        .where(BridgeConnection.project_id == project_id, BridgeConnection.revoked_at.is_(None), Bridge.revoked_at.is_(None))
+        .order_by(BridgeConnection.paired_at.desc())
+        .limit(1)
+    )
+
+
 def new_uid(prefix: str) -> str:
     return f"{prefix}-{secrets.token_hex(5).upper()}"
 

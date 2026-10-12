@@ -43,6 +43,8 @@ class GenerationRequest(BaseModel):
     actor_type: str | None = None
     # Unset: the scenario is only returned, not stored (tests, local runs).
     save_to: SaveTarget | None = None
+    # The project's Bridge: a valid scenario runs on its CARLA (no-brain ego) before the save. None: no CARLA check.
+    validator_bridge_uid: str | None = Field(default=None, max_length=64)
 
     @model_validator(mode="after")
     def unique_selected_maps(self) -> GenerationRequest:
@@ -71,6 +73,8 @@ class GeneratedScenario(BaseModel):
     xosc_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     # Id of the Backend ScenarioGeneration row the save node wrote; None when the request had no save_to.
     generation_id: int | None = None
+    # The CARLA run with the no-brain ego (app.bridges.CarlaVerdict.as_metrics); None when it was not attempted.
+    carla_validation: dict[str, Any] | None = None
 
     @model_validator(mode="after")
     def matches_plan(self) -> GeneratedScenario:
@@ -133,3 +137,5 @@ class GraphContext(TypedDict):
     catalog_api: Any
     # Lane graph of each selected map (app.scenario.lanes.LaneGraph), built once per run from its waypoints.
     lane_graphs: Any
+    # app.bridges.CarlaCheck, or None when valid scenarios are not run on CARLA.
+    carla: Any

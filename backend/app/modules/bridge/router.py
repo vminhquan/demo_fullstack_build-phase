@@ -28,6 +28,7 @@ from app.modules.bridge.schemas import (
 from app.modules.bridge.service import (
     PAIR_CODE_TTL,
     active_connections,
+    agent_link,
     bridge_from_token,
     bridge_online,
     cancel_pair_code,
@@ -439,9 +440,11 @@ async def bridge_socket(websocket: WebSocket) -> None:
             bridge.last_seen_at = bridge.online_since = now()
             await session.commit()
             connections = await active_connections(session, bridge_id)
-            await websocket.send_json(
-                {"type": "bridge.welcome", "bridge_uid": bridge.uid, "connections": [item.model_dump(mode="json") for item in connections]}
-            )
+            welcome = {"type": "bridge.welcome", "bridge_uid": bridge.uid, "connections": [item.model_dump(mode="json") for item in connections]}
+            if link := agent_link(bridge.uid):
+                # The Bridge's own channel to agent2: generated XOSC are checked on its CARLA without this server.
+                welcome["agent"] = link
+            await websocket.send_json(welcome)
             await publish_bridge_status(session, bridge, "bridge.online")
         # Runs queued while the Bridge was away (or not finished before it dropped) go out now.
         pending = asyncio.create_task(dispatch_pending(bridge_id))

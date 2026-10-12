@@ -4,8 +4,8 @@
               ↓
             llm ⇄ tools          the LLM searches sites and reads site details, several tools per turn if it wants
               ↓ submit_scenario
-           build_xosc → llm      simulation checks fail: the issues and numbers go back to the LLM
-              ↓ valid
+           build_xosc → llm      simulation checks fail: the issues and numbers go back to the LLM; then the
+              ↓ valid             project's Bridge runs the XOSC on CARLA with a no-brain ego, which must collide
             save → END           the XOSC is stored through the Backend
 
 Only the `llm` node calls the model and makes choices. `prefetch` and `tools` are plain Backend reads; `build_xosc`
@@ -22,6 +22,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Protocol, cast
 
+from app.bridges import CarlaCheck
 from app.contracts import GeneratedScenario, GenerationRequest, GraphContext, GraphState, MapFailure
 from app.llm.client import LLMCallError
 from app.logs import log, short
@@ -251,6 +252,15 @@ def build_xosc(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, A
             )
             feedback = {"valid": True, "xosc_sha256": digest, "incident": checked.metrics, "auto_tuned": checked.tuning}
     log(session, "   mô phỏng + kiểm tra: %.0f ms", (time.perf_counter() - started) * 1000)
+    unavailable = None
+    if scenario is not None:
+        scenario, carla_issue, unavailable = _carla_validate(session, runtime, scenario)
+        if carla_issue is not None:
+            feedback = {"valid": False, "issues": [carla_issue]}
+        elif unavailable is not None:
+            feedback = {"valid": False, "issues": [{"code": "CARLA_VALIDATION_UNAVAILABLE", "message": unavailable}]}
+        elif scenario is not None and scenario.carla_validation is not None:
+            feedback["carla"] = scenario.carla_validation
     if scenario is not None:
         plan = scenario.plan
         log(session, "   ✓ hợp lệ · %s · ego %s %g km/h · %s · %s", plan.title, plan.ego.blueprint_id, plan.ego.speed_kmh,
@@ -265,10 +275,48 @@ def build_xosc(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, A
     answer = {"role": "tool", "tool_call_id": pending["id"], "content": json.dumps(feedback, ensure_ascii=False)}
     update: dict[str, Any] = {"messages": [*state["messages"], answer], "submit_attempts": attempts,
                               "pending_submit": None, "scenario": scenario}
-    if scenario is None and out_of_attempts:
+    if unavailable is not None:
+        update.update(_failed(runtime, "CARLA_VALIDATION_UNAVAILABLE", unavailable))
+    elif scenario is None and out_of_attempts:
         codes = "; ".join(f"{item['code']}: {item['message']}" for item in feedback["issues"])
         update.update(_failed(runtime, "NO_VALID_PLAN", codes or "Không tạo được kịch bản hợp lệ."))
     return update
+
+
+def _carla_validate(session: str, runtime: Runtime[GraphContext],
+                    scenario: GeneratedScenario) -> tuple[GeneratedScenario | None, dict[str, Any] | None, str | None]:
+    """Run the simulation-valid XOSC on the project's Bridge CARLA with the no-brain ego (it keeps lane and speed).
+
+    Returns (scenario with its CARLA verdict, or None when the ego did not collide; the issue for the LLM then;
+    why the run must stop when CARLA is required but gave no verdict)."""
+    check: CarlaCheck | None = runtime.context.get("carla")
+    bridge_uid = runtime.context["request"].validator_bridge_uid
+    if check is None:
+        return scenario, None, None
+    if bridge_uid is None:
+        if check.mode == "required":
+            return None, None, "Project chưa ghép Bridge nên không kiểm tra được kịch bản trên CARLA."
+        log(session, "   CARLA: bỏ qua (project chưa ghép Bridge)")
+        return scenario, None, None
+    log(session, "── [CARLA] chạy XOSC trên Bridge %s với ego không phản ứng…", bridge_uid)
+    started = time.perf_counter()
+    verdict = check.validator.validate(bridge_uid, scenario.xosc, scenario.xosc_sha256, check.timeout_s)
+    log(session, "   CARLA %.1f s: %s", time.perf_counter() - started, verdict.as_metrics())
+    checked = scenario.model_copy(update={"carla_validation": verdict.as_metrics()})
+    if not verdict.ran:
+        reason = f"{verdict.code}: {verdict.message or 'không có kết quả'}"
+        if check.mode == "required":
+            return None, None, f"Không kiểm tra được trên CARLA ({reason})."
+        log(session, "   CARLA: không có kết quả, vẫn lưu theo mô phỏng (%s)", reason, level=logging.WARNING)
+        return checked, None, None
+    if verdict.collision:
+        return checked, None, None
+    critical = scenario.plan.critical_actor
+    return None, {"code": "NO_COLLISION_IN_CARLA", "message": (
+        f"Đã chạy kịch bản trên CARLA với ego KHÔNG phản ứng (giữ làn, giữ tốc độ) trong "
+        f"{verdict.scenario_duration_s or scenario.plan.duration_s:g} s: ego không va chạm. Test case chỉ hợp lệ khi ego "
+        f"không phản ứng thì va chạm với {critical}: cho {critical} vào đường của ego gần hơn hoặc muộn hơn, hoặc tăng "
+        f"chênh lệch tốc độ, nhưng lúc vào làn vẫn để ego còn cơ hội né."), "field": "actions"}, None
 
 
 def after_build(state: GraphState) -> str:
@@ -318,7 +366,8 @@ def build_graph():
 GENERATION_GRAPH = build_graph()
 
 
-def run_graph(request: GenerationRequest, llm_client: ChatLLM, seed: int, catalog_api: CatalogApi) -> GraphState:
+def run_graph(request: GenerationRequest, llm_client: ChatLLM, seed: int, catalog_api: CatalogApi,
+              carla: CarlaCheck | None = None) -> GraphState:
     state = initial_state(request, seed)
     session = request.session_id
     log(session, "══ BẮT ĐẦU · model=%s · seed=%d · maps=%s", llm_client.model_name, seed,
@@ -330,7 +379,7 @@ def run_graph(request: GenerationRequest, llm_client: ChatLLM, seed: int, catalo
     final = cast(GraphState, GENERATION_GRAPH.invoke(
         state,
         context={"request": request, "selected_snapshots": request.selected_snapshots, "llm": llm_client,
-                 "catalog_api": catalog_api,
+                 "catalog_api": catalog_api, "carla": carla,
                  "lane_graphs": {item.ref.map_name: lane_graph(item.ref.content_hash, item.catalog)
                                  for item in request.selected_snapshots}},
         config={"recursion_limit": 3 * MAX_LLM_TURNS + 6},

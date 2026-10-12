@@ -25,7 +25,14 @@ class Settings(BaseSettings):
     # Scenario-generation Agent (agent/ service). Empty URL disables generation endpoints with 503.
     agent_service_url: str = "http://localhost:8100"
     agent_api_key: str = ""
-    agent_timeout_seconds: float = 180.0
+    # Covers the LLM turns plus, when agent2 checks scenarios on CARLA, one Bridge run per submission.
+    agent_timeout_seconds: float = 600.0
+    # Bridges open their own socket to agent2 for validate.request (CARLA check with a no-brain ego): the URL as the
+    # Bridge machine reaches agent2 (ws://<host>:8100/v1/bridge/ws), and the secret agent2 verifies tokens with
+    # (agent2's BRIDGE_AGENT_SECRET). Either empty: bridge.welcome offers no agent2 channel.
+    agent_bridge_ws_url: str = ""
+    bridge_agent_secret: str = ""
+    agent_bridge_token_ttl_hours: int = 24
     # USD per 1M tokens for the cost report (defaults: gpt-4o-mini list price, check before relying on it).
     llm_price_input_per_mtok: float = 0.15
     llm_price_output_per_mtok: float = 0.60

@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 import shutil
 import subprocess
 import time
@@ -393,8 +394,9 @@ def _stop(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = None) -> Outcome:
-    """Blocking: runs one test case (call it in a thread). Raises CaseFailed when there is no result."""
+def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = None, *, camera_follow: bool | None = None) -> Outcome:
+    """Blocking: runs one test case (call it in a thread). Raises CaseFailed when there is no result.
+    `camera_follow` overrides cfg.camera (validation runs leave the CARLA window alone)."""
     if workdir.exists():
         shutil.rmtree(workdir, ignore_errors=True)
     workdir.mkdir(parents=True)
@@ -403,7 +405,7 @@ def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = Non
     env = child_env(cfg)
 
     camera = None
-    if cfg.camera == "follow":
+    if (cfg.camera == "follow") if camera_follow is None else camera_follow:
         try:
             with open(workdir / "camera.log", "wb") as camera_log:
                 camera = subprocess.Popen([cfg.runner_python, "-c", CAMERA_CODE, cfg.carla_host, str(cfg.carla_port)],
@@ -465,6 +467,8 @@ class RunExecutor:
         # Reports not yet acknowledged by the backend, in send order: re-sent after every reconnect so a
         # dropped socket never loses a result (the backend handles repeats idempotently).
         self.unacked: dict[tuple, dict] = {}
+        # One scenario at a time on this CARLA: test runs (queue) and agent2's validate.request share it.
+        self.carla = asyncio.Lock()
 
     @staticmethod
     def _key(kind: str, message: dict) -> tuple:
@@ -529,12 +533,13 @@ class RunExecutor:
             xosc = case.get("xosc") or ""
             if hashlib.sha256(xosc.encode("utf-8")).hexdigest() != case.get("xosc_sha256"):
                 raise CaseFailed("XOSC_HASH_MISMATCH", "Nội dung XOSC nhận được không khớp xosc_sha256")
-            probe = await asyncio.to_thread(probe_carla, self.cfg.carla_host, self.cfg.carla_port)
-            if not probe.reachable:
-                raise CaseFailed("CARLA_UNREACHABLE", f"Không kết nối được CARLA {probe.host}:{probe.port}: {probe.error}")
-            await self.report({"type": "job.started", **base})
-            workdir = config_store.config_dir() / "runs" / str(run_id) / str(case.get("case_key") or case["test_case_id"])
-            outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log)
+            async with self.carla:
+                probe = await asyncio.to_thread(probe_carla, self.cfg.carla_host, self.cfg.carla_port)
+                if not probe.reachable:
+                    raise CaseFailed("CARLA_UNREACHABLE", f"Không kết nối được CARLA {probe.host}:{probe.port}: {probe.error}")
+                await self.report({"type": "job.started", **base})
+                workdir = config_store.config_dir() / "runs" / str(run_id) / str(case.get("case_key") or case["test_case_id"])
+                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log)
         except CaseFailed as exc:
             self.log(f"  ✗ {case.get('case_key')}: {exc.code}")
             return {"type": "job.failed", **base, "error_code": exc.code, "error_message": (exc.message or None) and exc.message[-4000:]}
@@ -546,3 +551,37 @@ class RunExecutor:
         return {"type": "job.completed", **base, "revision": case["revision"], "xosc_sha256": case["xosc_sha256"],
                 "map_name": case.get("map_name"), "verdict": outcome.verdict, "exit_code": outcome.exit_code,
                 "duration_ms": outcome.duration_ms, "metrics": outcome.metrics}
+
+    async def validate(self, message: dict) -> dict:
+        """validate.request from agent2: run a just-generated XOSC once with the no-brain ego (it only keeps its lane
+        and speed) and report whether it collided. Never raises: problems come back as status "error"."""
+        request_id = str(message.get("request_id") or "")
+        name = re.sub(r"[^A-Za-z0-9_-]", "", request_id)[:32] or "request"
+        try:
+            xosc = message.get("xosc") or ""
+            if hashlib.sha256(xosc.encode("utf-8")).hexdigest() != message.get("xosc_sha256"):
+                raise CaseFailed("XOSC_HASH_MISMATCH", "Nội dung XOSC nhận được không khớp xosc_sha256")
+            problems = runner_problems(self.cfg)
+            if problems:
+                raise CaseFailed("RUNNER_NOT_READY", "; ".join(problems))
+            if self.carla.locked():
+                self.log(f"Kiểm tra kịch bản {name[:8]} cho agent2: đợi lượt chạy đang dùng CARLA…")
+            async with self.carla:
+                probe = await asyncio.to_thread(probe_carla, self.cfg.carla_host, self.cfg.carla_port)
+                if not probe.reachable:
+                    raise CaseFailed("CARLA_UNREACHABLE", f"Không kết nối được CARLA {probe.host}:{probe.port}: {probe.error}")
+                self.log(f"Kiểm tra kịch bản {name[:8]} cho agent2 (ego không phản ứng)…")
+                case = {"case_key": "validate", "test_case_id": name, "xosc": xosc, "timeout_s": message.get("timeout_s") or 120}
+                # Validations run one at a time: one folder keeps the last run for diagnosis without piling up.
+                workdir = config_store.config_dir() / "validations" / "latest"
+                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log, camera_follow=False)
+        except CaseFailed as exc:
+            self.log(f"  ✗ kiểm tra {name[:8]}: {exc.code}")
+            return {"status": "error", "error_code": exc.code, "error_message": (exc.message or None) and exc.message[-4000:]}
+        except Exception as exc:  # noqa: BLE001 - agent2 is waiting for an answer
+            self.log(f"  ✗ kiểm tra {name[:8]}: {exc}")
+            return {"status": "error", "error_code": "BRIDGE_ERROR", "error_message": f"{type(exc).__name__}: {exc}"[:4000]}
+        collided = outcome.metrics["collision"]
+        self.log(f"  ✓ kiểm tra {name[:8]}: {'va chạm' if collided else 'KHÔNG va chạm'} ({outcome.duration_ms / 1000:.1f} s)")
+        return {"status": "ok", "collision": collided, "collision_count": outcome.metrics["collision_count"],
+                "scenario_duration_s": outcome.metrics["scenario_duration_s"], "wall_time_ms": outcome.metrics["wall_time_ms"]}

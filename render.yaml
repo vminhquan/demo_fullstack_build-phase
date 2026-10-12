@@ -43,6 +43,14 @@ services:
           type: web
           name: scenario-forge-agent
           envVarKey: AGENT_API_KEY
+      # Bridges open their own socket to agent2 to check generated scenarios on CARLA (bridge.welcome hands it out).
+      - key: AGENT_BRIDGE_WS_URL
+        value: wss://scenario-forge-agent.onrender.com/v1/bridge/ws
+      - key: BRIDGE_AGENT_SECRET
+        fromService:
+          type: web
+          name: scenario-forge-agent
+          envVarKey: BRIDGE_AGENT_SECRET
 
   - type: web
     # Keep the existing Render service name so Blueprint sync updates it in place.
@@ -61,6 +69,11 @@ services:
         sync: false
       - key: AGENT2_MODEL_NAME
         value: gpt-4o-mini
+      # Verifies the tokens of Bridges dialling /v1/bridge/ws; the Backend signs them with the same value.
+      - key: BRIDGE_AGENT_SECRET
+        generateValue: true
+      - key: AGENT2_CARLA_VALIDATION
+        value: optional
       # Tool calls read stored snapshots from the Backend's internal endpoints (same AGENT_API_KEY).
       - key: BACKEND_URL
         value: https://scenario-forge-api.onrender.com

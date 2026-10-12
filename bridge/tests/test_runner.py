@@ -293,3 +293,46 @@ def test_prepare_xosc_holds_the_act_open_until_its_stop_time() -> None:
     assert hold.find(".//SimulationTimeCondition").get("value") == "5.6"
     assert hold.find(".//AbsoluteTargetSpeed").get("value") == "10.5"
     assert runner.prepare_xosc(once).count("HoldUntilEnd") == once.count("HoldUntilEnd")  # added once
+
+
+def validate(cfg: BridgeConfig, message: dict) -> dict:
+    async def main() -> dict:
+        return await runner.RunExecutor(cfg, lambda _: asyncio.sleep(0), lambda _: None).validate(message)
+
+    return asyncio.run(asyncio.wait_for(main(), 30))
+
+
+def validate_request(**extra) -> dict:
+    return {"type": "validate.request", "request_id": "ab12", "xosc": XOSC,
+            "xosc_sha256": hashlib.sha256(XOSC.encode()).hexdigest(), "timeout_s": 30, **extra}
+
+
+def test_validate_reports_whether_the_no_brain_ego_collided(cfg, monkeypatch) -> None:
+    monkeypatch.setenv("FAKE_COLLISIONS", "1")
+    assert validate(cfg, validate_request()) == {"status": "ok", "collision": True, "collision_count": 1,
+                                                  "scenario_duration_s": 15.024, "wall_time_ms": pytest.approx(0, abs=30_000)}
+    monkeypatch.setenv("FAKE_COLLISIONS", "0")
+    assert validate(cfg, validate_request())["collision"] is False
+
+
+def test_validate_answers_errors_instead_of_raising(cfg, monkeypatch) -> None:
+    assert validate(cfg, validate_request(xosc_sha256="0" * 64))["error_code"] == "XOSC_HASH_MISMATCH"
+    assert validate(BridgeConfig(), validate_request())["error_code"] == "RUNNER_NOT_READY"
+    monkeypatch.setattr(runner, "probe_carla", lambda host, port: CarlaProbe(host, port, False, "refused"))
+    answer = validate(cfg, validate_request())
+    assert answer["status"] == "error" and answer["error_code"] == "CARLA_UNREACHABLE"
+
+
+def test_validate_waits_for_a_test_run_holding_carla(cfg) -> None:
+    async def main() -> list[str]:
+        executor = runner.RunExecutor(cfg, lambda _: asyncio.sleep(0), lambda _: None)
+        order: list[str] = []
+        async with executor.carla:
+            checking = asyncio.create_task(executor.validate(validate_request()))
+            await asyncio.sleep(0.2)
+            order.append("run done" if not checking.done() else "validated too early")
+        await checking
+        order.append("validated")
+        return order
+
+    assert asyncio.run(asyncio.wait_for(main(), 30)) == ["run done", "validated"]

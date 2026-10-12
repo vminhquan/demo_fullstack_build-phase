@@ -1,5 +1,5 @@
 """Long-lived WebSocket channel to the backend: welcome, heartbeats with the CARLA probe, catalog sync,
-simulator runs (run.assign), reconnect with backoff."""
+simulator runs (run.assign), reconnect with backoff. The welcome may also start the agent2 channel (agent_link)."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +11,7 @@ from collections.abc import Callable
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus, InvalidURI
 
-from scenario_forge_bridge import api, runtime
+from scenario_forge_bridge import agent_link, api, runtime
 from scenario_forge_bridge import config as config_store
 from scenario_forge_bridge.carla_catalog import CarlaUnavailable
 from scenario_forge_bridge.carla_probe import probe_carla
@@ -111,6 +111,18 @@ def _close_detail(exc: ConnectionClosed, opened_at: float | None) -> str:
     return f"{side} đóng, {code}{lasted}"
 
 
+def _apply_agent(state: dict, info: dict | None, executor: RunExecutor, log: Log) -> None:
+    """bridge.welcome's `agent` ({"ws_url", "token"}): keep the agent2 channel running with the latest token."""
+    state["agent"] = info if info and info.get("ws_url") and info.get("token") else None
+    task = state.get("agent_task")
+    if state["agent"] is None:
+        if task is not None and not task.done():
+            task.cancel()
+        return
+    if task is None or task.done():
+        state["agent_task"] = asyncio.create_task(agent_link.run(lambda: state.get("agent"), executor, log))
+
+
 def _apply_connections(cfg: BridgeConfig, items: list[dict]) -> None:
     cfg.connections = [Connection(**{key: item[key] for key in Connection.__dataclass_fields__}) for item in items]
     config_store.save(cfg)
@@ -140,6 +152,7 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
                     _apply_connections(cfg, message.get("connections", []))
                     names = ", ".join(f"{item.project_name} ({item.connection_uid})" for item in cfg.connections) or "chưa có project nào"
                     log(f"Đã kết nối máy chủ · Bridge {message.get('bridge_uid')} · {names}")
+                    _apply_agent(state, message.get("agent"), executor, log)
                     if stop_when_unlinked and not cfg.connections:
                         log("Bridge chưa được ghép với project nào. Dùng `pair <mã 6 số>` để ghép.")
                         return True
@@ -203,6 +216,8 @@ async def run(cfg: BridgeConfig, token: str, log: Log, *, stop_when_unlinked: bo
         await _reconnect_loop(cfg, token, log, stop_when_unlinked, state, executor)
     finally:
         serving.cancel()
+        if state.get("agent_task") is not None:
+            state["agent_task"].cancel()
 
 
 async def _reconnect_loop(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: bool, state: dict, executor: RunExecutor) -> None:
