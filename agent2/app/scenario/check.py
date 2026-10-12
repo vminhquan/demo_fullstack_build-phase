@@ -8,6 +8,7 @@ Messages carry the numbers the LLM needs to correct itself.
 from __future__ import annotations
 
 import re
+import math
 
 from app.catalog.models import SelectedSnapshot
 from app.contracts import GenerationRequest
@@ -69,8 +70,8 @@ def _words(text: str) -> str:
     return " ".join(text.lower().split())
 
 
-def lanes_around(graph: LaneGraph, road_id: int, lane_id: int, s: float) -> str:
-    """The same-direction lanes around the ego, as lane_offset values: what the LLM may place actors on."""
+def lanes_around(graph: LaneGraph, road_id: int, lane_id: int, s: float, *, subject: str = "Ego") -> str:
+    """Same-direction lane offsets at a precise point, rather than elsewhere along the ego's path."""
     found = graph.locate(road_id, lane_id, s)
     if found is None:
         return ""
@@ -81,8 +82,8 @@ def lanes_around(graph: LaneGraph, road_id: int, lane_id: int, s: float) -> str:
             step += 1
             offsets.append(f"{sign * step:+d} ({name})")
     if not offsets:
-        return "Ego đang ở đường chỉ có 1 làn cùng chiều: chỉ dùng lane_offset 0 (trước/sau ego), hoặc chọn vị trí khác."
-    return f"Làn cùng chiều quanh ego: lane_offset 0 (làn ego), {', '.join(offsets)}; không có làn nào khác."
+        return f"{subject} đang ở đường chỉ có 1 làn cùng chiều: chỉ dùng lane_offset 0, hoặc chọn vị trí khác."
+    return f"Làn cùng chiều quanh {subject.lower()}: lane_offset 0 (làn ego), {', '.join(offsets)}; không có làn nào khác."
 
 
 def check(spec: ScenarioSpec, request: GenerationRequest, snapshots: list[SelectedSnapshot],
@@ -187,11 +188,13 @@ def _place(spec: ScenarioSpec, request: GenerationRequest, snapshot: SelectedSna
             issues.append(_issue("ACTOR_OFF_ROAD", f"{actor.id}: ds_m={actor.ds_m:g} vượt ra ngoài đoạn đường liền mạch của ego "
                                  f"(từ -{way.origin:.0f} đến +{way.length - way.origin:.0f} m).", "actors"))
             continue
-        point = graph.offset_lane(way.point_at(along), actor.lane_offset)
+        base = way.point_at(along)
+        point = graph.offset_lane(base, actor.lane_offset)
         if point is None:
-            mirrored = graph.offset_lane(way.point_at(along), -actor.lane_offset) if actor.lane_offset else None
+            mirrored = graph.offset_lane(base, -actor.lane_offset) if actor.lane_offset else None
             issues.append(_issue("NO_SUCH_LANE", f"{actor.id}: không có làn cùng chiều ở lane_offset={actor.lane_offset}. "
-                                 + lanes_around(graph, ego.road_id, ego.lane_id, ego.s), "actors",
+                                 + lanes_around(graph, base.road_id, base.lane_id, base.s,
+                                                subject=f"vị trí {actor.id} (ds_m={actor.ds_m:g})"), "actors",
                                  _mirror(spec, actor.id) if mirrored is not None else None))
             continue
         blueprint = vehicles[actor.blueprint_id]
@@ -226,8 +229,12 @@ def _physics(spec: ScenarioSpec, actors: list[ResolvedActor]) -> list[Validation
         if action.type == "lane_change" and action.duration_s:
             shortest = LANE_WIDTH_M / limits.max_lateral_mps
             if action.duration_s < shortest:
+                duration = math.ceil(shortest * 10 - 1e-9) / 10
+                actions = [item.model_copy(update={"duration_s": duration}) if item is action else item
+                           for item in spec.actions]
+                changed = spec.model_copy(update={"actions": actions})
                 issues.append(_issue("LANE_CHANGE_TOO_FAST", f"{action.actor} ({kinds[action.actor]}) cần ít nhất {shortest:.1f} s "
-                                     "để đổi một làn.", "actions"))
+                                     "để đổi một làn.", "actions", (changed, f"{action.actor} đổi làn trong {duration:g} s")))
     return issues
 
 
@@ -263,13 +270,13 @@ def _incident(spec: ScenarioSpec, outcome, probe=None, cut_in: bool = False) -> 
             or record.entry_ttc_s is not None and record.entry_ttc_s < MIN_ENTRY_TTC_S:
         when = (f"khi TTC chỉ còn {record.entry_ttc_s:g} s" if record.entry_ttc_s is not None
                 else f"và va chạm ngay lúc {record.collision_at_s:g} s")
-        hint, fix = _closer_hint(spec, probe)
+        hint, fix = _closer_hint(spec, probe, adjust_speed=cut_in)
         issues.append(_issue("INCIDENT_UNAVOIDABLE", f"{name} vào đường của ego {when} (< {MIN_ENTRY_TTC_S:g} s): ego không có "
                              "cơ hội xử lý. Tăng khoảng cách lúc vào làn, hoặc expected=collision nếu prompt muốn va chạm. "
                              "Gợi ý: " + hint, "actions", fix))
     elif cut_in and record.ahead_at_entry and record.entry_gap_m is not None \
             and record.entry_gap_m > (limit := max(CUT_IN_MIN_GAP_M, CUT_IN_HEADWAY_S * record.entry_ego_mps)):
-        hint, fix = _closer_hint(spec, probe)
+        hint, fix = _closer_hint(spec, probe, adjust_speed=True)
         issues.append(_issue("CUT_IN_TOO_FAR", f"{name} vào làn ego cách đầu ego {record.entry_gap_m:.0f} m: tạt đầu phải sát "
                              f"hơn, tối đa {limit:.0f} m ({CUT_IN_HEADWAY_S:g} s theo tốc độ ego). Gợi ý: " + hint, "actions", fix))
     elif record.min_ttc_at_s is None or record.min_ttc_s > TTC_CRITICAL_S or record.min_ttc_at_s > latest:
@@ -319,8 +326,8 @@ def _slow_down_hint(spec: ScenarioSpec, record, probe) -> tuple[str, tuple | Non
 MAX_NEARBY_TRIES = 80
 
 
-def _closer_hint(spec: ScenarioSpec, probe) -> tuple[str, tuple | None]:
-    """The start offset and lane-change time nearest to the actor's own that make the incident pass, by simulation."""
+def _closer_hint(spec: ScenarioSpec, probe, *, adjust_speed: bool = False) -> tuple[str, tuple | None]:
+    """Find nearby placement, then a slower actor if its current speed makes a close merge impossible."""
     actor = next(item for item in spec.actors if item.id == spec.critical_actor)
     change = next((index for index, action in enumerate(spec.actions)
                    if action.actor == actor.id and action.type == "lane_change"), None)
@@ -344,7 +351,26 @@ def _closer_hint(spec: ScenarioSpec, probe) -> tuple[str, tuple | None]:
             when = start_time + delay
             return (f"đặt {actor.id} ds_m={ds:g} và lane_change at_time_s={when:g} (đã thử bằng mô phỏng: đạt).",
                     (changed, f"{actor.id} xuất phát ds_m={ds:g}, đổi làn lúc {when:g} s"))
-    return "chỉnh ds_m của tác nhân hoặc thời điểm đổi làn (mô phỏng chưa tìm được số gần đó đạt).", None
+    if adjust_speed and actor.speed_kmh >= spec.ego.speed_kmh:
+        # Moving ds_m alone cannot make a fast actor close in front *and* give the ego a finite TTC. Keep the
+        # manoeuvre and search slower starting speeds; a speed action that maintained the old speed follows it.
+        targets = {id(action) for action in spec.actions if action.actor == actor.id and action.type == "speed"
+                   and action.target_speed_kmh is not None and action.target_speed_kmh >= actor.speed_kmh}
+        start_offsets = sorted((float(ds) for ds in range(-10, 42, 2)), key=lambda ds: abs(ds - actor.ds_m))
+        for speed in (spec.ego.speed_kmh - 10, spec.ego.speed_kmh - 20, spec.ego.speed_kmh - 30):
+            if speed <= 0:
+                continue
+            for ds in start_offsets:
+                actors = [item.model_copy(update={"ds_m": ds, "speed_kmh": speed}) if item.id == actor.id else item
+                          for item in spec.actors]
+                actions = [item.model_copy(update={"target_speed_kmh": speed}) if id(item) in targets else item
+                           for item in spec.actions]
+                changed = spec.model_copy(update={"actors": actors, "actions": actions})
+                if probe(changed):
+                    return (f"đặt {actor.id} ds_m={ds:g}, speed_kmh={speed:g}"
+                            " (đã thử bằng mô phỏng: đạt).",
+                            (changed, f"{actor.id} xuất phát ds_m={ds:g}, chạy {speed:g} km/h"))
+    return "chỉnh ds_m, thời điểm đổi làn và tốc độ tác nhân (mô phỏng chưa tìm được số gần đó đạt).", None
 
 
 def _mirror(spec: ScenarioSpec, actor_id: str) -> tuple:

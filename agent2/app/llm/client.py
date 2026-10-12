@@ -42,7 +42,8 @@ class OpenAILLM:
         except Exception as exc:  # the SDK's own errors, mapped to codes the user can act on
             raise _service_error(exc) from exc
         usage = getattr(completion, "usage", None)
-        self.last_usage = ({"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens}
+        self.last_usage = ({"prompt_tokens": usage.prompt_tokens, "completion_tokens": usage.completion_tokens,
+                            "cached_prompt_tokens": getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0}
                            if usage is not None else None)
         if not completion.choices:
             raise LLMCallError("LLM_EMPTY_RESPONSE", "OpenAI không trả kết quả.")

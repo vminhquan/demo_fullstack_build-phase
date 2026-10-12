@@ -36,8 +36,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from pydantic import ValidationError
 
-# LLM turns per run (reads + submissions); the last one must submit.
-MAX_LLM_TURNS = 20
+# LLM turns per run (reads + submissions); the last one must submit. In the measured 10-variant run one
+# variant spent 17 turns repeating invalid site reads. The observed valid variant needed seven turns.
+MAX_LLM_TURNS = 10
 
 
 class ChatLLM(Protocol):
@@ -49,7 +50,8 @@ class ChatLLM(Protocol):
 def initial_state(request: GenerationRequest, seed: int) -> GraphState:
     return {
         "session_id": request.session_id, "seed": seed, "messages": initial_messages(request, seed),
-        "llm_turns": 0, "submit_attempts": 0, "pending_submit": None, "scenario": None, "map_failures": [],
+        "llm_turns": 0, "usage": {"input_tokens": 0, "cached_input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+        "submit_attempts": 0, "pending_submit": None, "scenario": None, "map_failures": [],
     }
 
 
@@ -73,6 +75,10 @@ def prefetch(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any
     api, request, session = runtime.context["catalog_api"], runtime.context["request"], state["session_id"]
     if (request.actor_type or "").lower() in ("pedestrian", "walker"):
         return _failed(runtime, "UNSUPPORTED_ACTOR", "Chưa dựng được kịch bản người đi bộ (mới hỗ trợ phương tiện trên làn xe).")
+    # The lane graph already came with the request. Reject an impossible location before paying for a model turn
+    # (and before loading inventories); the Builder can route this variant to another selected map.
+    if unfit := map_cannot_host(request.prompt, runtime.context["lane_graphs"]):
+        return _failed(runtime, "LOCATION_NOT_AVAILABLE", f'"{request.prompt}": {unfit}')
     refs = [item.ref for item in runtime.context["selected_snapshots"]]
     jobs = {(ref.map_name, key): job for ref in refs for key, job in (
         ("summary", lambda ref=ref: api.summary(ref.snapshot_id)),
@@ -125,6 +131,11 @@ def llm(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     except LLMCallError as exc:
         return {"llm_turns": turn, **_failed(runtime, exc.code, str(exc))}
     calls = message["tool_calls"]
+    last_usage = getattr(chat_llm, "last_usage", None) or {}
+    usage = {"input_tokens": state["usage"]["input_tokens"] + int(last_usage.get("prompt_tokens", 0)),
+             "cached_input_tokens": state["usage"]["cached_input_tokens"] + int(last_usage.get("cached_prompt_tokens", 0)),
+             "output_tokens": state["usage"]["output_tokens"] + int(last_usage.get("completion_tokens", 0))}
+    usage["total_tokens"] = usage["input_tokens"] + usage["output_tokens"]
     log(session, "   LLM trả lời sau %.1f s · token %s · gọi %d tool", time.perf_counter() - started,
         short(getattr(chat_llm, "last_usage", None)), len(calls))
     if message.get("content"):
@@ -137,16 +148,16 @@ def llm(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
         # The map itself lacks what the prompt needs (checked on the lane graph): the Builder moves to another map.
         unfit = map_cannot_host(quote, runtime.context["lane_graphs"]) if _words_in(quote, prompt) else None
         if unfit is not None:
-            return {"llm_turns": turn, "messages": [*state["messages"], message],
+            return {"llm_turns": turn, "usage": usage, "messages": [*state["messages"], message],
                     **_failed(runtime, "LOCATION_NOT_AVAILABLE", f'"{quote.strip()}": {unfit}')}
         if reject_problem(quote, prompt) is None:
             reason = f'"{quote.strip()}": {args.get("reason", "")}'
-            return {"llm_turns": turn, "messages": [*state["messages"], message],
+            return {"llm_turns": turn, "usage": usage, "messages": [*state["messages"], message],
                     **_failed(runtime, "UNSUPPORTED_REQUIREMENT", reason)}
     if rejected is not None:
         log(session, "   reject_request không hợp lệ: trả lỗi về LLM thay vì dừng", level=logging.WARNING)
     submit = next((call for call in calls if call["function"]["name"] == SUBMIT_TOOL), None)
-    return {"llm_turns": turn, "messages": [*state["messages"], message],
+    return {"llm_turns": turn, "usage": usage, "messages": [*state["messages"], message],
             "pending_submit": {"id": submit["id"], "arguments": submit["function"]["arguments"]} if submit else None}
 
 
@@ -324,6 +335,6 @@ def run_graph(request: GenerationRequest, llm_client: ChatLLM, seed: int, catalo
                                  for item in request.selected_snapshots}},
         config={"recursion_limit": 3 * MAX_LLM_TURNS + 6},
     ))
-    log(session, "══ KẾT THÚC · status=%s · %d lượt LLM · %d lần nộp · %.1f s", final.get("status"), final["llm_turns"],
-        final["submit_attempts"], time.perf_counter() - started)
+    log(session, "══ KẾT THÚC · status=%s · %d lượt LLM · %d lần nộp · usage=%s · %.1f s", final.get("status"), final["llm_turns"],
+        final["submit_attempts"], final["usage"], time.perf_counter() - started)
     return final

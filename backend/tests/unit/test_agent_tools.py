@@ -81,6 +81,12 @@ def test_search_speed_filter_skips_unknown_speeds_and_flags_them():
     assert search_sites(document(), lane_change_allowed=False, limit=50)["sites"][0]["site_id"] == "c"
 
 
+def test_near_junction_accepts_verified_location_tag_even_without_distance():
+    doc = document()
+    doc["cut_in_sites"].append(site("e", length=100, tags=["intersection_4way"], junction_m=None))
+    assert {item["site_id"] for item in search_sites(doc, near_junction=True)["sites"]} == {"c", "e"}
+
+
 def test_each_section_answers_only_its_part_in_corridor_order():
     geometry = site_section(document(), "a", "geometry")
     assert geometry["upstream_length_m"] == 20.0 and "traffic_lights" not in geometry

@@ -19,6 +19,7 @@ def generate(request: GenerationRequest, llm: ChatLLM, catalog_api: CatalogApi) 
         target_count=request.target_count,
         seed=seed,
         model_name=llm.model_name,
+        usage=state["usage"],
         scenarios=[scenario] if scenario is not None else [],
         map_failures=state["map_failures"],
     )

@@ -100,7 +100,8 @@ def search_sites(
             and (speed_kmh_max is None or (speed is not None and speed <= speed_kmh_max))
             and (target_side is None or site.get("target_side") == target_side)
             and (lane_change_allowed is None or site.get("lane_change_allowed_throughout") is lane_change_allowed)
-            and (near_junction is None or (site.get("first_junction_m") is not None) is near_junction)
+            and (near_junction is None or (site.get("first_junction_m") is not None
+                  or bool({"junction", "junction_approach", "intersection_4way"} & set(site.get("location_tags") or []))) is near_junction)
         )
 
     matching = list(filter(keep, sites))

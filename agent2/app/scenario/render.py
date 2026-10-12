@@ -35,6 +35,17 @@ def _time_trigger(parent: ET.Element, name: str, seconds: float) -> None:
     })
 
 
+def _collision_trigger(parent: ET.Element, name: str) -> None:
+    """End on any collision involving the ego; a separate group makes it an alternative to the time limit."""
+    condition = ET.SubElement(ET.SubElement(parent, "ConditionGroup"), "Condition", {
+        "name": name, "delay": "0", "conditionEdge": "rising",
+    })
+    by_entity = ET.SubElement(condition, "ByEntityCondition")
+    ET.SubElement(ET.SubElement(by_entity, "TriggeringEntities", {"triggeringEntitiesRule": "any"}),
+                  "EntityRef", {"entityRef": EGO})
+    ET.SubElement(ET.SubElement(by_entity, "EntityCondition"), "CollisionCondition")
+
+
 def _criteria(stop_trigger: ET.Element) -> None:
     group = ET.SubElement(stop_trigger, "ConditionGroup")
     for name in CRITERIA:
@@ -176,9 +187,12 @@ def render_xosc(plan: ScenarioPlan, map_name: str) -> tuple[str, str]:
             _event(maneuver, index, action, LIMITS[by_actor[action.actor].kind])
     _hold_until(act, plan.duration_s, plan.ego.speed_kmh / 3.6)
     _time_trigger(ET.SubElement(act, "StartTrigger"), "StartAct", 0)
-    _time_trigger(ET.SubElement(act, "StopTrigger"), "EndAct", plan.duration_s)
+    act_stop = ET.SubElement(act, "StopTrigger")
+    _time_trigger(act_stop, "EndAct", plan.duration_s)
+    _collision_trigger(act_stop, "EndActOnCollision")
     stop = ET.SubElement(storyboard, "StopTrigger")
     _time_trigger(stop, "EndScenario", plan.duration_s)
+    _collision_trigger(stop, "EndScenarioOnCollision")
     _criteria(stop)
     ET.indent(root)
     xml = '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"

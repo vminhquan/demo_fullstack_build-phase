@@ -85,6 +85,21 @@ def test_prepare_xosc_adds_criteria_and_act_end_once() -> None:
     assert twice.count('name="criteria_CollisionTest"') == 1 and twice.count('name="ActEndAfterTime"') == 1
 
 
+def test_prepare_xosc_stops_existing_case_on_ego_collision_once() -> None:
+    ego = ('<Entities><ScenarioObject name="hero"><Vehicle><Properties>'
+           '<Property name="type" value="ego_vehicle"/></Properties></Vehicle></ScenarioObject></Entities>')
+    source = XOSC.replace("<Storyboard>", ego + "<Storyboard>")
+    prepared = runner.prepare_xosc(source)
+    twice = runner.prepare_xosc(prepared)
+    for xml in (prepared, twice):
+        act = ET.fromstring(xml).find("./Storyboard/Story/Act")
+        collisions = act.findall("./StopTrigger/ConditionGroup/Condition/ByEntityCondition")
+        assert len(collisions) == 1
+        assert collisions[0].find("./TriggeringEntities/EntityRef").get("entityRef") == "hero"
+        assert collisions[0].find("./EntityCondition/CollisionCondition") is not None
+        assert act.find("./StopTrigger/ConditionGroup/Condition/ByValueCondition/SimulationTimeCondition") is not None
+
+
 def test_prepare_xosc_moves_init_routes_into_the_act() -> None:
     route = ('<Private entityRef="hero"><PrivateAction><TeleportAction/></PrivateAction><PrivateAction><RoutingAction><AssignRouteAction>'
              '<Route name="ego_route" closed="false"/></AssignRouteAction></RoutingAction></PrivateAction></Private>')

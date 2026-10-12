@@ -83,6 +83,7 @@ class GenerationResponse(BaseModel):
     target_count: int = Field(ge=1)
     seed: int = Field(ge=0)
     model_name: str | None = None
+    usage: dict[str, int] = Field(default_factory=dict)
     scenarios: list[GeneratedScenario] = Field(default_factory=list)
     map_failures: list[MapFailure] = Field(default_factory=list)
     clarification_questions: list[str] = Field(default_factory=list)
@@ -111,6 +112,7 @@ class GraphState(TypedDict):
     # OpenAI chat messages: system, user, then assistant tool calls and their tool results.
     messages: list[dict[str, Any]]
     llm_turns: int
+    usage: dict[str, int]
     submit_attempts: int
     # The submit_scenario call waiting for build_xosc: {"id": ..., "arguments": "<json>"}.
     pending_submit: NotRequired[dict[str, str] | None]

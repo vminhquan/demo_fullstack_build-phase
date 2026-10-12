@@ -11,7 +11,7 @@ from app.scenario.check import check, map_cannot_host
 from app.scenario.explore import describe, find_starts
 from app.scenario.lanes import LaneGraph
 from app.scenario.render import render_xosc
-from app.scenario.spec import ScenarioPlan, ScenarioSpec, StartLane, ValidationResult
+from app.scenario.spec import ActionSpec, ScenarioPlan, ScenarioSpec, StartLane, ValidationResult
 from world import snapshot
 
 SCHEMA = Path(__file__).resolve().parents[1] / "knowledge/schemas/OpenSCENARIO_1_0.xsd"
@@ -91,6 +91,22 @@ def test_a_motorcycle_cut_in_passes_and_exports_valid_open_scenario(tmp_path: Pa
         assert result.returncode == 0, result.stderr
 
 
+def test_xosc_ends_when_the_ego_collides_or_the_duration_expires():
+    plan = check(cut_in(), request(), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan)
+    root = ET.fromstring(render_xosc(plan, "Town01")[0])
+    for stop in (root.find("./Storyboard/Story/Act/StopTrigger"), root.find("./Storyboard/StopTrigger")):
+        assert stop is not None
+        groups = stop.findall("ConditionGroup")
+        assert any(group.find("./Condition/ByValueCondition/SimulationTimeCondition") is not None for group in groups)
+        collisions = [group.find("./Condition/ByEntityCondition") for group in groups]
+        collisions = [condition for condition in collisions if condition is not None]
+        assert len(collisions) == 1
+        assert collisions[0].find("./TriggeringEntities/EntityRef").get("entityRef") == "hero"
+        assert collisions[0].find("./EntityCondition/CollisionCondition") is not None
+    assert root.find("./Storyboard/StopTrigger/ConditionGroup/Condition[@name='criteria_CollisionTest']") is not None
+
+
 def test_other_road_users_and_manoeuvres_need_no_special_code():
     truck = spec([actor("truck1", TRUCK, -1, 15, 45)], [action("truck1", 0.5, "lane_change", direction="left", duration_s=3.0)],
                  ego_kmh=55)
@@ -124,6 +140,17 @@ def test_the_kind_limits_apply_to_every_actor():
     assert "LANE_CHANGE_TOO_FAST" in codes(check(quick_truck, request(), [SNAPSHOT], GRAPHS))
     fast_bike = spec([actor("bike", "vehicle.bh.crossbike", -1, 10, 60)], [])
     assert "SPEED_LIMIT" in codes(check(fast_bike, request(), [SNAPSHOT], GRAPHS))
+
+
+def test_tuning_repairs_a_motorcycle_lane_change_below_its_physical_minimum():
+    from app.scenario.check import tune
+
+    too_fast = cut_in().model_copy(update={"actions": [
+        cut_in().actions[0].model_copy(update={"duration_s": 1.0}), *cut_in().actions[1:]]})
+    plan = tune(too_fast, request(), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan), plan
+    assert plan.actions[0].duration_s >= 1.4
+    assert any(note.startswith("LANE_CHANGE_TOO_FAST") for note in plan.tuning)
 
 
 def test_what_the_prompt_says_must_show():
@@ -278,6 +305,22 @@ def test_a_cut_in_must_merge_close_in_front():
     assert isinstance(plan, ScenarioPlan) and plan.metrics["entry_ttc_s"] >= 0.5
     # A prompt not about a cut-in is not held to the close-merge rule.
     assert "CUT_IN_TOO_FAR" not in codes(check(far, request("xe máy chuyển làn phía trước"), [SNAPSHOT], GRAPHS))
+
+
+def test_tuning_slows_a_motorcycle_that_cannot_merge_close_at_its_original_speed():
+    from app.scenario.check import tune
+
+    too_fast = spec([actor("moto1", MOTO, -1, 10, 80)],
+                    [action("moto1", 1, "lane_change", direction="into_ego_lane", duration_s=2)], ego_kmh=50)
+    plan = tune(too_fast, request("xe máy tạt đầu ô tô"), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan), plan
+    assert plan.actors[0].speed_kmh < plan.ego.speed_kmh
+    assert any(note.startswith("CUT_IN_TOO_FAR") and "chạy" in note for note in plan.tuning)
+    maintaining_speed = too_fast.model_copy(update={"actions": [*too_fast.actions,
+        ActionSpec.model_validate(action("moto1", 4, "speed", target_speed_kmh=80, acceleration_mps2=0.5))]})
+    plan = tune(maintaining_speed, request("xe máy tạt đầu ô tô"), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan), plan
+    assert plan.actions[1].target_speed_kmh == plan.actors[0].speed_kmh
 
 
 def test_tuning_moves_the_start_so_the_incident_is_at_the_junction():

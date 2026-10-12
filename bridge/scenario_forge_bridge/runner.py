@@ -182,6 +182,7 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
             cond = ET.SubElement(ET.SubElement(ET.SubElement(act, "StopTrigger"), "ConditionGroup"), "Condition",
                                  {"name": "ActEndAfterTime", "delay": "0", "conditionEdge": "rising"})
             ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "SimulationTimeCondition", {"value": end_after, "rule": "greaterThan"})
+        _stop_on_ego_collision(root, act)
         _hold_until_stop(root, act)
 
     existing = {cond.get("name") for cond in trigger.iter("Condition")}
@@ -193,6 +194,28 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
             ET.SubElement(ET.SubElement(cond, "ByValueCondition"), "ParameterCondition", {"parameterRef": "", "value": "", "rule": "lessThan"})
     ET.indent(root)
     return '<?xml version="1.0" encoding="utf-8"?>\n' + ET.tostring(root, encoding="unicode") + "\n"
+
+
+def _stop_on_ego_collision(root: ET.Element, act: ET.Element) -> None:
+    """Give saved and imported XOSC the same collision end condition as newly generated scenarios."""
+    ego = next((item.get("name") for item in root.findall("Entities/ScenarioObject")
+                if any(prop.get("name") == "type" and prop.get("value") == "ego_vehicle"
+                       for prop in item.iter("Property"))), None)
+    stop = act.find("StopTrigger")
+    if ego is None or stop is None:
+        return
+    for condition in stop.findall("./ConditionGroup/Condition"):
+        collision = condition.find("./ByEntityCondition/EntityCondition/CollisionCondition")
+        refs = condition.findall("./ByEntityCondition/TriggeringEntities/EntityRef")
+        if collision is not None and len(collision) == 0 and any(ref.get("entityRef") == ego for ref in refs):
+            return
+    condition = ET.SubElement(ET.SubElement(stop, "ConditionGroup"), "Condition", {
+        "name": "EndActOnCollision", "delay": "0", "conditionEdge": "rising",
+    })
+    by_entity = ET.SubElement(condition, "ByEntityCondition")
+    ET.SubElement(ET.SubElement(by_entity, "TriggeringEntities", {"triggeringEntitiesRule": "any"}),
+                  "EntityRef", {"entityRef": ego})
+    ET.SubElement(ET.SubElement(by_entity, "EntityCondition"), "CollisionCondition")
 
 
 def _hold_until_stop(root: ET.Element, act: ET.Element) -> None:

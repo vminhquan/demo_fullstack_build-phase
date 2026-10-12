@@ -46,13 +46,13 @@ class SearchCutInSites(BaseModel):
                                                     "Chỉ khi prompt nói về giới hạn tốc độ đường.")
     target_side: Literal["left", "right"] | None = Field(description="Phía xe từ làn kề lấn sang; chỉ khi prompt nói rõ.")
     lane_change_allowed: bool | None = Field(description="Chỉ khi prompt nói về vạch kẻ cho phép/cấm đổi làn.")
-    near_junction: bool | None = Field(description="Chỉ khi prompt nói gần/không gần giao lộ.")
+    near_junction: bool | None = Field(description="Chỉ khi prompt nói gần/không gần giao lộ; không cần đặt cùng lúc với tags giao lộ/ngã tư.")
     limit: int | None = Field(description="Số site trả về, 1-20 (mặc định 10).")
 
 
 class SiteRef(BaseModel):
     map_name: str = Field(description="Một trong các map đã chọn.")
-    site_id: str
+    site_id: str = Field(description="Sao chép nguyên chuỗi site_id từ kết quả search_cut_in_sites; không dùng road_id.")
 
 
 class GetSiteGeometry(SiteRef):
@@ -73,14 +73,14 @@ class GetSiteJunctions(SiteRef):
 
 class FindEgoStarts(BaseModel):
     """Tìm vị trí xuất phát cho ô tô ego trên mọi làn xe chạy của map (đã xáo theo biến thể). Mỗi vị trí có tags
-    (straight, curve, gentle_curve, junction_approach, multi_lane), quãng đường đi tiếp được, số làn cùng chiều
+    (straight, curve, gentle_curve, junction_approach, intersection_4way_approach, multi_lane), quãng đường đi tiếp được, số làn cùng chiều
     bên trái/phải. Mọi bộ lọc là null trừ khi kịch bản cần."""
 
     map_name: str = Field(description="Một trong các map đã chọn.")
     tags: list[str] | None = Field(description="Tất cả phải có.")
     min_path_m: float | None = Field(description="Quãng đường tối thiểu ego đi tiếp được (m).")
-    min_left_lanes: int | None = Field(description="Số làn cùng chiều tối thiểu bên trái ego.")
-    min_right_lanes: int | None = Field(description="Số làn cùng chiều tối thiểu bên phải ego.")
+    min_left_lanes: int | None = Field(description="Số làn cùng chiều tối thiểu bên trái ego; để null nếu làn bên phải cũng được.")
+    min_right_lanes: int | None = Field(description="Số làn cùng chiều tối thiểu bên phải ego; để null nếu làn bên trái cũng được.")
     limit: int | None = Field(description="Số vị trí trả về, 1-20 (mặc định 10).")
 
 
@@ -110,7 +110,7 @@ SCENARIO_WORDS = re.compile(
     r"bán tải|tạt đầu|cắt ngang|cắt đầu|chen ngang|chen|lấn làn|lấn|cut-?in|phanh gấp|phanh|dừng đột ngột|dừng|"
     r"vượt|chạy chậm|đổi làn|chuyển làn|tăng tốc|giảm tốc|ego|"
     # weather, light and road kinds are built too (presets, the lighting field, lane positions)
-    r"bão bụi|bụi mù|bụi|mưa to|mưa lớn|mưa nhỏ|mưa|nắng|sương mù|sương|nhiều mây|âm u|đường ướt|ướt|trơn|"
+    r"bão bụi|bụi mù|bụi|mưa to|mưa lớn|mưa nhỏ|mưa|đổ|nắng|sương mù|sương|nhiều mây|âm u|đường ướt|ướt|trơn|"
     r"ban đêm|buổi tối|trời tối|đêm|tối|hoàng hôn|chiều tối|ban ngày|buổi trưa|buổi sáng|trời|"
     r"khúc cua|đường cong|đường thẳng|giao lộ|ngã tư|ngã ba|nút giao|"
     r"cao tốc|xa lộ|quốc lộ|đường lớn|đô thị|nội thành|ngoại ô|trong phố|thành phố|nông thôn|"
@@ -178,7 +178,13 @@ class CatalogApi:
         return self._request("GET", f"/catalog/snapshots/{snapshot_id}/cut-in-sites", params=filters)
 
     def site_section(self, snapshot_id: int, site_id: str, section: str) -> dict[str, Any]:
-        return self._request("GET", f"/catalog/snapshots/{snapshot_id}/cut-in-sites/{quote(site_id, safe='')}/{section}")
+        try:
+            return self._request("GET", f"/catalog/snapshots/{snapshot_id}/cut-in-sites/{quote(site_id, safe='')}/{section}")
+        except ToolError as exc:
+            if str(exc) == "Không tìm thấy dữ liệu yêu cầu trong snapshot.":
+                raise ToolError(f"site_id '{site_id}' không tồn tại: hãy dùng nguyên chuỗi site_id trong kết quả "
+                                "search_cut_in_sites, không dùng road_id hoặc số thứ tự.") from exc
+            raise
 
     def vehicles(self, snapshot_id: int, kind: str, seed: int | None = None) -> dict[str, Any]:
         params = {"kind": kind, **({"seed": seed} if seed is not None else {})}

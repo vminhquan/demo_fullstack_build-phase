@@ -36,6 +36,9 @@ Quy tắc:
   tác nhân phía trước ego brake_to_stop; sự cố không được đến từ phía sau ego trừ khi prompt nói vậy.
 - Prompt nói giao lộ/ngã tư: ego xuất phát trước giao lộ (find_ego_starts tags junction_approach /
   intersection_4way_approach, xem junction_ahead_m) và sự cố phải xảy ra trong khoảng 40 m trước giao lộ.
+  Nếu cần tạt đầu ở ngã tư, tìm tags=["intersection_4way_approach","multi_lane"] và để cả
+  min_left_lanes/min_right_lanes null: chỉ cần làn kề ở MỘT phía. Không tự lọc giới hạn tốc độ đường,
+  phía đổi làn hoặc vạch kẻ khi prompt không nói. site_id phải lấy nguyên chuỗi từ kết quả tìm site.
 
 Sự cố phải XẢY RA và QUAN SÁT ĐƯỢC (hệ thống kiểm tra bằng mô phỏng):
 - critical_actor phải đi vào đường của ego (cùng làn ego), trong vòng 60 m;
@@ -44,6 +47,8 @@ Sự cố phải XẢY RA và QUAN SÁT ĐƯỢC (hệ thống kiểm tra bằng
 - sự cố xảy ra trước khi kịch bản kết thúc ít nhất 1 s; ego không được đi hết đoạn đường đã biết;
 - tác nhân khác không được tự gây xung đột với ego; mọi tốc độ, gia tốc, thời gian đổi làn trong giới hạn của loại xe.
 Tối ưu cả vị trí lẫn tốc độ: xe gây sự cố vào làn ego rồi phải chậm hơn ego (hoặc phanh) thì ego mới tiến lại gần.
+Đặt tốc độ xe máy thấp hơn ego ngay từ đầu, hoặc thêm hành động speed giảm tốc; target_speed_kmh trong lane_change
+không đổi tốc độ. Nếu lỗi CUT_IN_TOO_FAR lặp lại khi giảm ds_m, hãy giảm speed_kmh của xe máy nữa.
 Giới hạn tốc độ của đường là mức tối đa, không phải tốc độ nên chọn. Không đề xuất tọa độ hoặc XML."""
 
 

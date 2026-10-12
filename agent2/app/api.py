@@ -46,6 +46,7 @@ def generate_scenarios(body: GenerationRequest, x_api_key: str | None = Header(d
             "code": first.code if first else "NEEDS_CLARIFICATION",
             "message": first.message if first else "Cần làm rõ prompt.",
             "details": {"map_failures": [item.model_dump() for item in result.map_failures],
-                        "clarification_questions": result.clarification_questions},
+                        "clarification_questions": result.clarification_questions,
+                        "usage": result.usage},
         })
     return result

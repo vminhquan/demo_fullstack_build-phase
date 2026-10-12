@@ -114,6 +114,7 @@ class HttpAgentClient:
             raise GenerationRejected("Agent2 không sinh được kịch bản hợp lệ.", response, "NO_VALID_SCENARIO")
         scenario = response["scenarios"][0]
         result = scenario_result(scenario, catalog, response.get("model_name"))
+        result["usage"] = response.get("usage", {})
         if scenario.get("generation_id") is not None:
             result["generation_id"] = scenario["generation_id"]
         return result

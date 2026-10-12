@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     # Backend base URL (e.g. http://backend:8000) for the catalog tool calls and the save; required to generate.
     backend_url: str | None = Field(default=None, validation_alias="BACKEND_URL")
     model_name: str = Field(
-        default="gpt-4o",
+        default="gpt-4o-mini",
         validation_alias="AGENT2_MODEL_NAME",
     )
     # Run log (app.logs): INFO shows every turn, tool call and result; DEBUG adds the system prompt and the XOSC.

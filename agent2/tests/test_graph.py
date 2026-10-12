@@ -134,6 +134,8 @@ def test_reject_problem_accepts_only_a_quoted_unsupported_requirement() -> None:
     assert reject_problem(live, live) is not None
     assert reject_problem("trên cao tốc", prompt) is not None
     assert reject_problem("mưa đá", prompt) is not None  # not in the prompt
+    rain_at_intersection = "xe máy tạt đầu ô tô ở ngã tư khi trời đổ mưa lớn"
+    assert reject_problem(rain_at_intersection, rain_at_intersection) is not None
 
 
 def test_prefetch_gives_whole_lists_in_a_neutral_order_and_picks_nothing() -> None:
@@ -169,13 +171,25 @@ def test_a_locked_pedestrian_is_refused_before_the_llm() -> None:
 def test_a_map_that_cannot_host_the_prompt_is_reported_for_the_builder_to_move_on() -> None:
     from world import snapshot
 
-    give_up = (REJECT_TOOL, {"quote": "xe máy tạt đầu ô tô", "reason": "Map không có làn bên cạnh."})
-    llm = ScriptedLLM([[give_up]])
+    llm = ScriptedLLM([])
+    backend = FakeBackend()
     # Another snapshot id: lane graphs are cached by content hash.
     single = request(selected_snapshots=[snapshot("Town01", 9, presets=["ClearNoon"], single_lane=True)])
-    result = generate(single, llm, FakeBackend())
+    result = generate(single, llm, backend)
     assert result.status == "failed" and result.map_failures[0].code == "LOCATION_NOT_AVAILABLE"
-    # The same rejection on a map with adjacent lanes is sent back to the model instead.
-    llm = ScriptedLLM([[give_up], [(SUBMIT_TOOL, VALID)]])
+    assert llm.sent == [] and backend.calls == [] and result.usage["total_tokens"] == 0
+    # A map with adjacent lanes still goes through the model.
+    llm = ScriptedLLM([[(SUBMIT_TOOL, VALID)]])
     assert generate(request(), llm, FakeBackend()).status == "completed"
     assert json.loads(llm.sent[0]["messages"][1]["content"])["catalog"]["Town01"]["can_host"]["multi_lane"] is True
+
+
+def test_usage_is_summed_across_llm_turns() -> None:
+    class MeteredLLM(ScriptedLLM):
+        def chat(self, messages, tools, tool_choice="required"):
+            self.last_usage = {"prompt_tokens": 100 * (len(self.sent) + 1), "cached_prompt_tokens": 50,
+                               "completion_tokens": 20}
+            return super().chat(messages, tools, tool_choice)
+
+    result = generate(request(), MeteredLLM([READS, [(SUBMIT_TOOL, VALID)]]), FakeBackend())
+    assert result.usage == {"input_tokens": 300, "cached_input_tokens": 100, "output_tokens": 40, "total_tokens": 340}

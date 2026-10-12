@@ -68,7 +68,8 @@ def test_prefetch_reads_whole_lists_without_a_seed():
 def test_backend_errors_reach_the_model_as_a_message():
     tools = CatalogTools(backend(recording([], {}, 404)), [snapshot("Town04", 108).ref])
     answer = json.loads(tool_result(tools, "get_site_speed", json.dumps({"map_name": "Town04", "site_id": "x"})))
-    assert answer == {"error": "Không tìm thấy dữ liệu yêu cầu trong snapshot."}
+    assert "site_id 'x' không tồn tại" in answer["error"]
+    assert "search_cut_in_sites" in answer["error"]
 
 
 def test_save_posts_the_scenario_and_returns_the_id():
