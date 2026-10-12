@@ -126,6 +126,15 @@ async def cancel_pair_code(session: AsyncSession, project_id: int, code_id: int)
         row.cancelled_at = now()
 
 
+def _replaced_connections_query(project_id: int, bridge_id: int):
+    # BridgeConnection.bridge is eagerly loaded through a LEFT JOIN. PostgreSQL must lock only the connection table.
+    return select(BridgeConnection).where(
+        BridgeConnection.project_id == project_id,
+        BridgeConnection.bridge_id != bridge_id,
+        BridgeConnection.revoked_at.is_(None),
+    ).with_for_update(of=BridgeConnection)
+
+
 async def redeem_pair_code(
     session: AsyncSession, body: BridgePairRequest, device_token: str | None
 ) -> tuple[Bridge, BridgeConnection, BridgePairCode, Project, str | None, list[BridgeConnection]]:
@@ -167,9 +176,7 @@ async def redeem_pair_code(
 
     # Revoked before the new link is written: the project may hold only one active connection (partial unique index).
     replaced = list((await session.scalars(
-        select(BridgeConnection).where(
-            BridgeConnection.project_id == project.id, BridgeConnection.bridge_id != bridge.id, BridgeConnection.revoked_at.is_(None)
-        ).with_for_update()
+        _replaced_connections_query(project.id, bridge.id)
     )).all())
     for item in replaced:
         item.revoked_at = now()

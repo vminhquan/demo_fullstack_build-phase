@@ -3,10 +3,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from app.modules.bridge.router import bearer_token
 from app.modules.bridge.runs_router import job_view
-from app.modules.bridge.service import AttemptLimiter, TooManyAttempts, hash_code, hash_device_token, new_code, new_uid
+from app.modules.bridge.service import (
+    AttemptLimiter, TooManyAttempts, _replaced_connections_query, hash_code, hash_device_token, new_code, new_uid,
+)
 from app.modules.bridge.verdict import collision_verdict
 from app.shared.infrastructure.models import RunVerdict
 
@@ -51,6 +54,13 @@ def test_bearer_token_parsing() -> None:
     assert bearer_token("bearer  abc ") == "abc"
     assert bearer_token("Basic abc") is None
     assert bearer_token(None) is None
+
+
+def test_replaced_connections_lock_only_the_connection_table() -> None:
+    # The ORM eagerly outer-joins bridges; PostgreSQL rejects a bare FOR UPDATE on that query.
+    sql = str(_replaced_connections_query(1, 2).compile(dialect=postgresql.dialect()))
+    assert "LEFT OUTER JOIN bridges" in sql
+    assert "FOR UPDATE OF bridge_connections" in sql
 
 
 def test_collision_criterion_corrects_legacy_bridge_verdict() -> None:
