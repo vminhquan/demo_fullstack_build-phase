@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 pydantic-settings
+typing_extensions
 openai
 langgraph>=1.2,<2
 httpx

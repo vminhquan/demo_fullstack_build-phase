@@ -89,6 +89,12 @@ def test_runner_env_drops_foreign_python_settings(monkeypatch) -> None:
     assert "PYTHONHOME" not in env and "VIRTUAL_ENV" not in env
     assert env["PYTHONPATH"] == str(Path("/opt/CARLA", "PythonAPI", "carla"))
     assert env["SCENARIO_RUNNER_ROOT"] == "/opt/sr"
+    assert env["PYTHONIOENCODING"] == "utf-8" and env["PYTHONUTF8"] == "1"
+
+
+def test_runner_subprocess_decodes_invalid_utf8_without_crashing() -> None:
+    output = runtime._run([sys.executable, "-c", "import os; os.write(1, bytes([0xff]))"], "Test runner output")
+    assert output == "\ufffd"
 
 
 def test_install_needs_a_supported_version_and_uv(monkeypatch) -> None:
@@ -108,6 +114,15 @@ def test_catalog_sync_runs_in_the_runner_python(tmp_path) -> None:
     assert [item.map_name for item in results] == ["Town03"]
     assert results[0].catalog["map_name"] == "Town03" and results[0].catalog["waypoints"]
     assert loading and loading[0][2].startswith("Town03")
+
+
+def test_catalog_sync_skips_undecodable_runner_output(tmp_path, monkeypatch) -> None:
+    script = tmp_path / "catalog.py"
+    script.write_text("import sys\nsys.stdout.buffer.write(b'\\xff\\n' + "
+                      "b'{\"event\":\"result\",\"index\":1,\"total\":1,\"map_name\":\"Town03\",\"catalog\":{}}\\n')\n")
+    monkeypatch.setattr(runtime, "_catalog_script", lambda: script)
+    [result] = runtime.collect(BridgeConfig(runner_python=sys.executable))
+    assert result.map_name == "Town03" and result.catalog == {}
 
 
 def test_catalog_sync_reports_an_unreachable_carla(tmp_path) -> None:

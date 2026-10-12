@@ -188,7 +188,7 @@ def after_llm(state: GraphState) -> str:
 def tools(state: GraphState, runtime: Runtime[GraphContext]) -> dict[str, Any]:
     """Run every catalog call of the last turn (no LLM here); a submit waits for build_xosc."""
     catalog = CatalogTools(runtime.context["catalog_api"], [item.ref for item in runtime.context["selected_snapshots"]],
-                           seed=state["seed"], graphs=runtime.context["lane_graphs"])
+                           seed=state["seed"], graphs=runtime.context["lane_graphs"], prompt=runtime.context["request"].prompt)
     pending = state.get("pending_submit")
     session = state["session_id"]
     log(session, "── [node tools] chạy song song %d tool đọc DB",

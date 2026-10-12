@@ -198,9 +198,14 @@ def _place(spec: ScenarioSpec, request: GenerationRequest, snapshot: SelectedSna
         point = graph.offset_lane(base, actor.lane_offset)
         if point is None:
             mirrored = graph.offset_lane(base, -actor.lane_offset) if actor.lane_offset else None
+            nearby = next((candidate for candidate in (40, 30, 20, 10, -10, -20, -30, -40)
+                           if 0 <= way.origin + candidate <= way.length
+                           and graph.offset_lane(way.point_at(way.origin + candidate), actor.lane_offset) is not None), None)
+            closer = (f" Ở ds_m={nearby:g} có lane_offset={actor.lane_offset:+d}; đưa tác nhân về gần ego hoặc chọn site khác."
+                      if nearby is not None else "")
             issues.append(_issue("NO_SUCH_LANE", f"{actor.id}: không có làn cùng chiều ở lane_offset={actor.lane_offset}. "
                                  + lanes_around(graph, base.road_id, base.lane_id, base.s,
-                                                subject=f"vị trí {actor.id} (ds_m={actor.ds_m:g})"), "actors",
+                                                subject=f"vị trí {actor.id} (ds_m={actor.ds_m:g})") + closer, "actors",
                                  _mirror(spec, actor.id) if mirrored is not None else None))
             continue
         blueprint = vehicles[actor.blueprint_id]
@@ -351,6 +356,10 @@ def _incident(spec: ScenarioSpec, outcome, probe=None, cut_in: bool = False) -> 
                       f"ego nhanh hơn {closing * 3.6:.0f} km/h)")
             hint = (f"để TTC <= {TTC_CRITICAL_S:g} s cần khoảng cách <= {TTC_CRITICAL_S * closing:.0f} m ở tốc độ đó, "
                     f"hoặc chênh lệch tốc độ >= {gap / TTC_CRITICAL_S * 3.6:.0f} km/h; sự cố phải xảy ra trước {latest:g} s")
+        if cut_in and fix is None:
+            tuned_hint, tuned_fix = _cut_in_speed_hint(spec, probe)
+            if tuned_fix is not None:
+                hint, fix = tuned_hint, tuned_fix
         issues.append(_issue("INCIDENT_TOO_MILD", f"Sự cố chưa xảy ra: {detail}. Gợi ý: {hint}.", "actions", fix))
     elif (record.distance_at_min_m or 0) > MAX_VIEW_M:
         issues.append(_issue("INCIDENT_OUT_OF_VIEW", f"Sự cố xảy ra cách ego {record.distance_at_min_m:.0f} m (> {MAX_VIEW_M:g} m).",
@@ -377,6 +386,29 @@ def _slow_down_hint(spec: ScenarioSpec, record, probe) -> tuple[str, tuple | Non
                     f"acceleration_mps2={decel:g} (đã thử bằng mô phỏng: đạt). Tác nhân có thể nhanh trước khi đổi làn nhưng "
                     "phải chậm hơn ego sau khi vào làn"), (changed, f"{kind.id} giảm xuống {target} km/h lúc {at:g} s")
     return f"tác nhân vào làn quá xa phía trước ({record.entry_offset_m:.0f} m): giảm ds_m hoặc vào làn sớm hơn", None
+
+
+def _cut_in_speed_hint(spec: ScenarioSpec, probe) -> tuple[str, tuple | None]:
+    """Try a faster approach to enter ahead, while preserving any slowdown after the merge."""
+    if probe is None:
+        return "", None
+    actor = next(item for item in spec.actors if item.id == spec.critical_actor)
+    ego_speed = spec.ego.speed_kmh
+    speeds = [ego_speed - gap for gap in (5, 10, 15, 20, 25, 30) if ego_speed - gap > 0]
+    distances = list(dict.fromkeys((actor.ds_m, 10.0, 14.0, 18.0, 22.0, 26.0, 30.0, 34.0, 38.0)))
+    for ds in distances:
+        for speed in speeds:
+            changed_actor = actor.model_copy(update={"ds_m": ds, "speed_kmh": speed})
+            actors = [changed_actor if item.id == actor.id else item for item in spec.actors]
+            # An old action that merely maintained the old approach speed must not undo the candidate speed.
+            actions = [item.model_copy(update={"target_speed_kmh": speed})
+                       if item.actor == actor.id and item.type == "speed" and item.target_speed_kmh is not None
+                       and item.target_speed_kmh >= actor.speed_kmh else item for item in spec.actions]
+            changed = spec.model_copy(update={"actors": actors, "actions": actions})
+            if probe(changed):
+                note = f"{actor.id} xuất phát ds_m={ds:g}, chạy {speed:g} km/h"
+                return f"đặt {actor.id} ds_m={ds:g}, speed_kmh={speed:g} (đã thử bằng mô phỏng: đạt)", (changed, note)
+    return "", None
 
 
 MAX_NEARBY_TRIES = 80
@@ -426,7 +458,7 @@ def _closer_hint(spec: ScenarioSpec, probe, *, adjust_speed: bool = False) -> tu
                     return (f"đặt {actor.id} ds_m={ds:g}, speed_kmh={speed:g}"
                             " (đã thử bằng mô phỏng: đạt).",
                             (changed, f"{actor.id} xuất phát ds_m={ds:g}, chạy {speed:g} km/h"))
-    return "chỉnh ds_m, thời điểm đổi làn và tốc độ tác nhân (mô phỏng chưa tìm được số gần đó đạt).", None
+    return "mô phỏng chưa tìm được số đạt tại vị trí này: chọn ego.start khác từ search_cut_in_sites.", None
 
 
 def _mirror(spec: ScenarioSpec, actor_id: str) -> tuple:
@@ -564,7 +596,7 @@ MAX_TUNING_ROUNDS = 4
 
 def tune(spec: ScenarioSpec, request: GenerationRequest, snapshots: list[SelectedSnapshot],
          graphs: dict[str, LaneGraph]) -> ScenarioPlan | ValidationResult:
-    """check(), and when every issue is only about numbers that simulation can fix, apply those fixes and check again.
+    """Apply a simulation-verified fix, then recheck all issues; one fix may resolve several related symptoms.
 
     The LLM decides who does what where; this only moves starts, times and speeds. A plan lists what was tuned; a
     failure keeps the issues of the last spec tried."""
@@ -574,9 +606,9 @@ def tune(spec: ScenarioSpec, request: GenerationRequest, snapshots: list[Selecte
         result = check(spec, request, snapshots, graphs)
         if isinstance(result, ScenarioPlan):
             return result.model_copy(update={"tuning": notes})
-        if not result.issues or any(issue.fix is None for issue in result.issues):
+        if not result.issues or not any(issue.fix is not None for issue in result.issues):
             break
-        issue = result.issues[0]
+        issue = next(issue for issue in result.issues if issue.fix is not None)
         spec = issue.fix
         notes.append(f"{issue.code}: {issue.fix_note}")
     if notes:

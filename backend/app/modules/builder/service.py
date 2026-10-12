@@ -10,7 +10,12 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+
+try:
+    from datetime import UTC
+except ImportError:  # Python 3.10
+    UTC = timezone.utc
 from typing import Any
 
 from sqlalchemy import select, update

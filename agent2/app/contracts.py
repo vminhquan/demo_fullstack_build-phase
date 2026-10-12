@@ -6,7 +6,9 @@ small results; catalogs reach the nodes through GraphContext so checkpointing do
 
 from __future__ import annotations
 
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, TypedDict
+
+from typing_extensions import NotRequired
 
 from app.catalog.models import SelectedSnapshot, SnapshotRef
 from app.scenario.spec import ScenarioPlan

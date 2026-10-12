@@ -96,3 +96,26 @@ def test_lane_tools_answer_from_the_snapshot_without_the_backend():
     assert info["right_lanes_same_direction"] == 1 and seen == []
     missing = json.loads(tool_result(tools, "describe_position", json.dumps({"map_name": "Town04", "road_id": 9, "lane_id": -1, "s": 0})))
     assert "Không có làn" in missing["error"]
+
+
+def test_cut_in_search_ignores_constraints_the_prompt_did_not_request():
+    seen = []
+    selected = snapshot("Town04", 108)
+    tools = CatalogTools(backend(recording(seen, {"total_matching": 1, "sites": [{"site_id": "s"}]})),
+                         [selected.ref], graphs={"Town04": LaneGraph(selected.catalog)},
+                         prompt="xe máy tạt đầu ô tô ở ngã tư")
+    starts = json.loads(tool_result(tools, "find_ego_starts", json.dumps({
+        "map_name": "Town04", "tags": ["intersection_4way_approach"], "min_path_m": 40,
+        "min_left_lanes": 1, "min_right_lanes": 1, "limit": 5,
+    })))
+    assert starts["total_matching"] > 0 and starts["ignored_filters"] == ["min_left_lanes", "min_right_lanes"]
+    assert all(start["left_lanes_same_direction"] + start["right_lanes_same_direction"] > 0 for start in starts["starts"])
+    sites = json.loads(tool_result(tools, "search_cut_in_sites", json.dumps({
+        "map_name": "Town04", "tags": ["junction", "intersection_4way", "multi_lane"], "min_length_m": 40,
+        "speed_kmh_min": 0, "speed_kmh_max": 80, "target_side": "left", "lane_change_allowed": True,
+        "near_junction": True, "limit": 10,
+    })))
+    params = seen[0].url.params
+    assert params.get_list("tags") == ["intersection_4way"] and params["near_junction"] == "true"
+    assert all(key not in params for key in ("speed_kmh_min", "speed_kmh_max", "target_side", "lane_change_allowed"))
+    assert set(sites["ignored_filters"]) == {"speed_kmh_min", "speed_kmh_max", "target_side", "lane_change_allowed", "tags=multi_lane", "tags=junction (using near_junction)"}

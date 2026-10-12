@@ -19,6 +19,11 @@ Quy tắc:
 - Không biết gì thêm về map ngoài catalog và kết quả tool. Có thể gọi nhiều tool trong cùng một lượt.
 - Vị trí ego: find_ego_starts (mọi làn) hoặc search_cut_in_sites (cặp làn kề cùng chiều). Bộ lọc chỉ dùng cho điều
   kịch bản cần; kết quả 0 thì bỏ bớt bộ lọc và tìm lại. describe_position / get_site_* để hiểu thêm một vị trí.
+- Nếu cần nhiều mục get_site_* của cùng một site, gọi chúng trong CÙNG MỘT lượt. Không đọc lại mục đã có kết quả;
+  sau khi thấy vị trí và làn phù hợp, nộp kịch bản sớm để nhận phản hồi mô phỏng và còn lượt sửa.
+- Tạt đầu chỉ cần làn kề ở MỘT phía: không đặt đồng thời min_left_lanes=1 và min_right_lanes=1. speed_kmh_min/max
+  của search_cut_in_sites là giới hạn đường, không phải tốc độ ego; nếu prompt không nói giới hạn đường thì để null.
+  Nếu chưa có kết quả tìm site, không tự bịa road_id/lane_id/s (đặc biệt không dùng 0,0,0).
 - Tác nhân đặt tương đối với ego: lane_offset (0 cùng làn, +1 trái, -1 phải; CHỈ làn có thật: xem
   left_lanes_same_direction / right_lanes_same_direction, hoặc adjacent_lane_side của search_cut_in_sites) và ds_m
   (+ phía trước, - phía sau, theo tâm xe). Hành động: speed, lane_change, brake_to_stop, mỗi cái có at_time_s.
@@ -42,6 +47,7 @@ Quy tắc:
   Nếu cần tạt đầu ở ngã tư, tìm tags=["intersection_4way_approach","multi_lane"] và để cả
   min_left_lanes/min_right_lanes null: chỉ cần làn kề ở MỘT phía. Không tự lọc giới hạn tốc độ đường,
   phía đổi làn hoặc vạch kẻ khi prompt không nói. site_id phải lấy nguyên chuỗi từ kết quả tìm site.
+  ds_m của tác nhân phải nằm ở đoạn vẫn còn làn kề; một site dài 60 m không có nghĩa là ds_m=150 còn làn đó.
 
 Sự cố phải XẢY RA và QUAN SÁT ĐƯỢC (hệ thống kiểm tra bằng mô phỏng):
 - critical_actor phải đi vào đường của ego (cùng làn ego), trong vòng 60 m;
@@ -50,8 +56,9 @@ Sự cố phải XẢY RA và QUAN SÁT ĐƯỢC (hệ thống kiểm tra bằng
 - sự cố xảy ra trước khi kịch bản kết thúc ít nhất 1 s; ego không được đi hết đoạn đường đã biết;
 - tác nhân khác không được tự gây xung đột với ego; mọi tốc độ, gia tốc, thời gian đổi làn trong giới hạn của loại xe.
 Tối ưu cả vị trí lẫn tốc độ: xe gây sự cố vào làn ego rồi phải chậm hơn ego (hoặc phanh) thì ego mới tiến lại gần.
-Đặt tốc độ xe máy thấp hơn ego ngay từ đầu, hoặc thêm hành động speed giảm tốc; target_speed_kmh trong lane_change
-không đổi tốc độ. Nếu lỗi CUT_IN_TOO_FAR lặp lại khi giảm ds_m, hãy giảm speed_kmh của xe máy nữa.
+Xe máy phải còn ở PHÍA TRƯỚC lúc vào làn: nếu ds_m chỉ khoảng 10 m và đổi làn sau 2 s, tốc độ ban đầu thường cần
+gần tốc độ ego. Sau khi vào làn, thêm hành động speed giảm xuống chậm hơn ego để tạo TTC; target_speed_kmh trong
+lane_change không đổi tốc độ. Nếu lỗi CUT_IN_TOO_FAR lặp lại khi giảm ds_m, hãy giảm speed_kmh của xe máy nữa.
 Giới hạn tốc độ của đường là mức tối đa, không phải tốc độ nên chọn. Không đề xuất tọa độ hoặc XML."""
 
 

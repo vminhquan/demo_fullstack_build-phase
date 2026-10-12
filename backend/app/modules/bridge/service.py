@@ -5,7 +5,12 @@ import hmac
 import secrets
 import time
 from collections import defaultdict, deque
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+
+try:
+    from datetime import UTC
+except ImportError:  # Python 3.10
+    UTC = timezone.utc
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession

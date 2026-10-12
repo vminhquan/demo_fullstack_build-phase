@@ -212,8 +212,9 @@ class CatalogTools:
     """Runs the catalog tool calls of this run: Backend reads, and lane-graph reads on the selected snapshots."""
 
     def __init__(self, api: CatalogApi, refs: list[SnapshotRef], *, seed: int | None = None,
-                 graphs: dict[str, LaneGraph] | None = None):
+                 graphs: dict[str, LaneGraph] | None = None, prompt: str = ""):
         self._api, self._seed, self._graphs = api, seed, graphs or {}
+        self._prompt = _words(prompt)
         self._snapshots = {ref.map_name: ref.snapshot_id for ref in refs}
 
     @staticmethod
@@ -238,16 +239,49 @@ class CatalogTools:
             if graph is None:
                 raise ToolError("Chưa có dữ liệu làn đường của map này.")
             if name == "find_ego_starts":
-                return find_starts(graph, tags=args.tags, min_path_m=args.min_path_m, min_left_lanes=args.min_left_lanes,
-                                   min_right_lanes=args.min_right_lanes, seed=self._seed, limit=args.limit)
+                left, right = args.min_left_lanes, args.min_right_lanes
+                tags = list(args.tags or [])
+                ignored = []
+                if self._prompt and left and right and not re.search(r"cả hai bên|hai bên|hai phía|cả trái (?:lẫn|và) phải", self._prompt):
+                    left = right = None
+                    ignored = ["min_left_lanes", "min_right_lanes"]
+                    if "multi_lane" not in tags:
+                        tags.append("multi_lane")
+                answer = find_starts(graph, tags=tags, min_path_m=args.min_path_m, min_left_lanes=left,
+                                     min_right_lanes=right, seed=self._seed, limit=args.limit)
+                if ignored:
+                    answer["ignored_filters"] = ignored
+                    answer["hint"] = "Tạt đầu chỉ cần làn kề ở một phía; xem left_lanes_same_direction hoặc right_lanes_same_direction."
+                return answer
             found = describe(graph, args.road_id, args.lane_id, args.s)
             if found is None:
                 raise ToolError("Không có làn xe chạy tại vị trí này.")
             return found.as_dict()
         if name == "search_cut_in_sites":
             filters = args.model_dump(exclude={"map_name"}, exclude_none=True)
+            ignored = []
+            if self._prompt:
+                if not re.search(r"giới hạn tốc độ|tốc độ tối đa (?:của )?đường|biển (?:báo )?tốc độ", self._prompt):
+                    ignored += [key for key in ("speed_kmh_min", "speed_kmh_max") if key in filters]
+                if not re.search(r"bên trái|bên phải|từ trái|từ phải|phía trái|phía phải", self._prompt):
+                    ignored += [key for key in ("target_side",) if key in filters]
+                if not re.search(r"vạch kẻ|vạch liền|vạch đứt|cấm đổi làn|cho phép đổi làn", self._prompt):
+                    ignored += [key for key in ("lane_change_allowed",) if key in filters]
+                for key in ignored:
+                    filters.pop(key)
+                if "multi_lane" in filters.get("tags", []):
+                    filters["tags"] = [tag for tag in filters["tags"] if tag != "multi_lane"]
+                    ignored.append("tags=multi_lane")  # Every cut-in site already has two adjacent lanes.
+                if "junction" in filters.get("tags", []):
+                    filters["tags"] = [tag for tag in filters["tags"] if tag != "junction"]
+                    # A junction may be tagged by its approach or intersection type rather than literally "junction".
+                    filters["near_junction"] = True
+                    ignored.append("tags=junction (using near_junction)")
             # The run's seed orders the matches, so parallel Builder variants are offered different sites.
-            return self._api.search_sites(snapshot_id, {**filters, **({"seed": self._seed} if self._seed is not None else {})})
+            answer = self._api.search_sites(snapshot_id, {**filters, **({"seed": self._seed} if self._seed is not None else {})})
+            if ignored:
+                answer["ignored_filters"] = ignored
+            return answer
         return self._api.site_section(snapshot_id, args.site_id, SECTION_TOOLS[name][1])
 
 

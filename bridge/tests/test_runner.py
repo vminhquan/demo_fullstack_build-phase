@@ -42,7 +42,8 @@ FAKE_SCENARIO_RUNNER = textwrap.dedent('''
                          "expected": 0, "actual": collisions, "success": collisions == 0})
     criteria.append({"name": "Duration", "actor": "all", "optional": False, "expected": 100000, "actual": 15.024, "success": True})
     report = {"scenario": "ScenarioForge: t", "success": all(c["success"] for c in criteria), "criteria": criteria}
-    pathlib.Path(a.outputDir, "ScenarioForge: t.json").write_text(json.dumps(report))
+    report_name = "ScenarioForge: t.json" if sys.platform != "win32" else "ScenarioForge_t.json"
+    pathlib.Path(a.outputDir, report_name).write_text(json.dumps(report))
     print("PYTHONPATH=" + os.environ.get("PYTHONPATH", ""))
     if os.environ.get("FAKE_HANG_AFTER_ERROR"):
         print("Traceback (most recent call last):")

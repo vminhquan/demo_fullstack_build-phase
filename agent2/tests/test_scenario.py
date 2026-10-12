@@ -197,6 +197,19 @@ def test_the_three_live_submissions_get_feedback_naming_the_real_lanes():
     assert issue.code == "NO_TARGET_LANE" and "-1 (phải)" in issue.message and "into_ego_lane" in issue.message
 
 
+def test_missing_lane_far_ahead_suggests_a_real_nearby_position():
+    data = snapshot().model_dump()
+    data["catalog"]["waypoints"] = [point for point in data["catalog"]["waypoints"]
+                                      if not (point["road_id"] == 2 and point["lane_id"] == -2)]
+    limited = type(SNAPSHOT).model_validate(data)
+    graph = {"Town01": LaneGraph(limited.catalog)}
+    far = spec([actor("moto1", MOTO, -1, 100, 40)],
+               [action("moto1", 2, "lane_change", direction="into_ego_lane", duration_s=2)], start_s=250)
+    result = check(far, request("xe máy tạt đầu", selected_snapshots=[limited]), [limited], graph)
+    [issue] = result.issues
+    assert issue.code == "NO_SUCH_LANE" and "ds_m=40" in issue.message
+
+
 def test_into_ego_lane_finds_the_side_and_behind_needs_to_be_ahead_first():
     behind = spec([actor("moto1", MOTO, -1, -10, 40)], [action("moto1", 2, "lane_change", direction="into_ego_lane", duration_s=2)])
     [issue] = check(behind, request(), [SNAPSHOT], GRAPHS).issues
@@ -321,6 +334,21 @@ def test_tuning_slows_a_motorcycle_that_cannot_merge_close_at_its_original_speed
     plan = tune(maintaining_speed, request("xe máy tạt đầu ô tô"), [SNAPSHOT], GRAPHS)
     assert isinstance(plan, ScenarioPlan), plan
     assert plan.actions[1].target_speed_kmh == plan.actors[0].speed_kmh
+
+
+def test_tuning_speeds_up_a_motorcycle_that_would_merge_behind_the_ego():
+    from app.scenario.check import tune
+
+    slow = spec([actor("moto1", MOTO, -1, 10, 30)],
+                [action("moto1", 2, "lane_change", direction="into_ego_lane", duration_s=2),
+                 action("moto1", 4, "speed", target_speed_kmh=30, acceleration_mps2=3)],
+                ego_kmh=50, duration=10)
+    prompt = request("xe máy tạt đầu ô tô")
+    assert codes(check(slow, prompt, [SNAPSHOT], GRAPHS)) == {"INCIDENT_TOO_MILD", "PROMPT_BEHAVIOUR_MISMATCH"}
+    plan = tune(slow, prompt, [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan), plan
+    assert plan.actors[0].speed_kmh == 45
+    assert any(note.startswith("INCIDENT_TOO_MILD") for note in plan.tuning)
 
 
 def test_tuning_moves_the_start_so_the_incident_is_at_the_junction():
