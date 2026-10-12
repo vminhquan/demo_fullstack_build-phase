@@ -45,7 +45,7 @@ services:
           envVarKey: AGENT_API_KEY
       # Bridges open their own socket to agent2 to check generated scenarios on CARLA (bridge.welcome hands it out).
       - key: AGENT_BRIDGE_WS_URL
-        value: wss://scenario-forge-agent.onrender.com/v1/bridge/ws
+        value: wss://scenario-forge-agent2.onrender.com/v1/bridge/ws
       - key: BRIDGE_AGENT_SECRET
         fromService:
           type: web
