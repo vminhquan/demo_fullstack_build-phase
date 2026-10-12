@@ -340,6 +340,40 @@ def test_tuning_moves_the_start_so_the_incident_is_at_the_junction():
     assert isinstance(result, ValidationResult) and "TUNING_TRIED" not in codes(result)
 
 
+def test_junction_tuning_does_not_move_the_actor_onto_a_missing_lane():
+    from app.scenario.check import tune
+
+    data = snapshot().model_dump()
+    data["catalog"]["waypoints"] = [point for point in data["catalog"]["waypoints"]
+                                      if not (point["road_id"] == 10 and point["lane_id"] == -2 and point["s"] < 100)]
+    limited = type(SNAPSHOT).model_validate(data)
+    graph = {"Town01": LaneGraph(limited.catalog)}
+    candidate = at_junction(120)
+    prompt = request("xe máy tạt đầu ô tô ở ngã tư", selected_snapshots=[limited])
+    result = check(candidate, prompt, [limited], graph)
+    [issue] = [item for item in result.issues if item.code == "INCIDENT_NOT_AT_JUNCTION"]
+    assert issue.fix is None
+    tuned = tune(candidate, prompt, [limited], graph)
+    assert "INCIDENT_NOT_AT_JUNCTION" in codes(tuned)
+    assert "NO_SUCH_LANE" not in codes(tuned)
+
+
+def test_tuning_moves_a_cut_in_actor_out_of_the_ego_lane():
+    from app.scenario.check import tune
+
+    base = cut_in()
+    same_lane = base.model_copy(update={
+        "actors": [base.actors[0].model_copy(update={"lane_offset": 0})],
+        "actions": [base.actions[0].model_copy(update={"direction": "into_ego_lane"}), *base.actions[1:]],
+    })
+    result = check(same_lane, request("xe máy tạt đầu ô tô"), [SNAPSHOT], GRAPHS)
+    assert codes(result) == {"ALREADY_IN_EGO_LANE"}
+    plan = tune(same_lane, request("xe máy tạt đầu ô tô"), [SNAPSHOT], GRAPHS)
+    assert isinstance(plan, ScenarioPlan), plan
+    assert plan.actors[0].lane_id == -2
+    assert any(note.startswith("ALREADY_IN_EGO_LANE") for note in plan.tuning)
+
+
 
 def test_tuning_moves_an_actor_to_the_side_that_has_a_lane_and_backs_off_an_unavoidable_merge():
     # Seen live (#2, #10): both actors put on the left, where only a right-hand lane exists.

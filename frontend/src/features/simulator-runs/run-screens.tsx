@@ -39,7 +39,8 @@ function Progress({ run }: { run: SimulatorRun }) {
 
 function Outcome({ job }: { job: SimulatorRunJob }) {
   if (job.status === "COMPLETED") {
-    return <>{job.collision ? "Có va chạm" : "Không va chạm"}{job.min_ttc_seconds !== null && <div className="case-key">TTC {job.min_ttc_seconds}s</div>}</>;
+    const collision = job.collision === null ? "Chưa có dữ liệu va chạm" : job.collision ? "Có va chạm" : "Không va chạm";
+    return <>{collision}{job.min_ttc_seconds !== null && <div className="case-key">TTC {job.min_ttc_seconds}s</div>}</>;
   }
   if (job.status === "FAILED") {
     const code = job.error_code ?? "";
@@ -152,7 +153,7 @@ export function SimRunDetailScreen() {
       {error && <ErrorNotice>{error}</ErrorNotice>}
       <section className="stats stats-three">
         <div className="stat"><div className="stat-label">Tiến độ</div><div className="stat-value">{run.done}/{run.total}</div><div className="stat-delta">Test case đã có kết quả</div></div>
-        <div className="stat"><div className="stat-label">Pass / Fail</div><div className="stat-value">{run.passed} / {run.failed}</div><div className="stat-delta">Theo đánh giá của ScenarioRunner</div></div>
+        <div className="stat"><div className="stat-label">Pass / Fail</div><div className="stat-value">{run.passed} / {run.failed}</div><div className="stat-delta">Theo va chạm của xe ego</div></div>
         <div className="stat"><div className="stat-label">Lỗi</div><div className="stat-value">{run.errors}</div><div className="stat-delta">Không chạy được hoặc quá giờ</div></div>
       </section>
       <section className="panel">

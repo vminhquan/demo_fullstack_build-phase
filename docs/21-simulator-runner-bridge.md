@@ -103,7 +103,7 @@ Mọi message dưới đây được BE trả lời bằng `ack` hoặc `error`.
 | Trường | Bắt buộc | Ghi chú |
 |---|---|---|
 | `revision`, `xosc_sha256` | ✔ | Lấy đúng từ `run.assign`. Lệch với test case đã khóa → BE ghi `FAILED RESULT_MISMATCH` |
-| `verdict` | ✔ | `PASS` \| `FAIL` \| `ERROR` |
+| `verdict` | ✔ | `PASS` khi `CollisionTest.actual = 0`, `FAIL` khi có va chạm, `ERROR` khi chạy lỗi. Các tiêu chí ScenarioRunner khác được lưu trong `metrics.criteria` để chẩn đoán và không đổi verdict. |
 | `exit_code`, `duration_ms`, `map_name` | | |
 | `metrics` | | Lưu nguyên vào `run_results.metrics`. Giao diện đọc `collision`, `collision_count`, `min_ttc_seconds` |
 

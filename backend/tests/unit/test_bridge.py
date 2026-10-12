@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from app.modules.bridge.router import bearer_token
+from app.modules.bridge.runs_router import job_view
 from app.modules.bridge.service import AttemptLimiter, TooManyAttempts, hash_code, hash_device_token, new_code, new_uid
+from app.modules.bridge.verdict import collision_verdict
+from app.shared.infrastructure.models import RunVerdict
 
 
 def test_codes_are_six_digits_with_leading_zeros_kept() -> None:
@@ -46,6 +51,32 @@ def test_bearer_token_parsing() -> None:
     assert bearer_token("bearer  abc ") == "abc"
     assert bearer_token("Basic abc") is None
     assert bearer_token(None) is None
+
+
+def test_collision_criterion_corrects_legacy_bridge_verdict() -> None:
+    no_collision = {"collision": False, "criteria": [
+        {"name": "CollisionTest", "actual": 0}, {"name": "KeepLaneTest", "actual": 1, "success": False},
+    ]}
+    assert collision_verdict(RunVerdict.FAIL, no_collision) is RunVerdict.PASS
+    assert collision_verdict(RunVerdict.PASS, {"criteria": [{"name": "CollisionTest", "actual": 1}]}) is RunVerdict.FAIL
+    assert collision_verdict(RunVerdict.ERROR, no_collision) is RunVerdict.ERROR
+    assert collision_verdict(RunVerdict.FAIL, {"criteria": [{"name": "Duration", "actual": 10}]}) is RunVerdict.FAIL
+
+
+def test_simulator_result_page_shows_no_collision_as_pass() -> None:
+    from app.shared.infrastructure.models import DangerLevel, RunJobStatus
+
+    case = SimpleNamespace(id=7, case_key="TC-000007", title="Tạt đầu", map_code="Town03",
+                           adversary_type="motorcycle", environment_code="HardRainNoon", danger_level=DangerLevel.LOW,
+                           revision=1)
+    job = SimpleNamespace(status=RunJobStatus.COMPLETED, error_code=None, error_message=None,
+                          started_at=None, finished_at=None)
+    result = SimpleNamespace(revision=1, verdict=RunVerdict.FAIL,
+                             metrics={"collision": False, "collision_count": 0,
+                                      "criteria": [{"name": "CollisionTest", "actual": 0}]},
+                             duration_ms=10000, scenario_runner_exit_code=0)
+    view = job_view(job, case, result)
+    assert view.verdict is RunVerdict.PASS and view.collision is False
 
 
 def test_gunzip_limited_accepts_catalogs_and_rejects_bombs_and_garbage() -> None:

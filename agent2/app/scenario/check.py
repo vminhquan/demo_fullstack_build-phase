@@ -108,12 +108,18 @@ def check(spec: ScenarioSpec, request: GenerationRequest, snapshots: list[Select
         message = str(exc)
         if exc.code in ("NO_TARGET_LANE", "EGO_LANE_NOT_ADJACENT", "ALREADY_IN_EGO_LANE"):
             message += " " + lanes_around(graph, ego.road_id, ego.lane_id, ego.s) + " Dùng direction=into_ego_lane để đổi vào làn ego."
-        return ValidationResult(valid=False, issues=[_issue(exc.code, message, exc.field)])
+        if exc.code == "ALREADY_IN_EGO_LANE":
+            message += " lane_offset=0 không tạo được tình huống tạt đầu: chọn làn kề tại vị trí tác nhân hoặc vị trí ego khác."
+        elif exc.code == "EGO_LANE_NOT_ADJACENT":
+            message += " Làn kề có thể đã kết thúc trước lúc đổi làn: đổi sớm hơn hoặc chọn vị trí ego khác."
+        fix = _maneuver_fix(spec, request, snapshot, graph, exc.code)
+        return ValidationResult(valid=False, issues=[_issue(exc.code, message, exc.field, fix)])
     issues = [_issue("INITIAL_OVERLAP", f"{a} và {b} chồng lên nhau lúc bắt đầu: tách xa hơn (ds_m/lane_offset).", "actors")
               for a, b in outcome.initial_overlaps]
     cut_in = bool(CUT_IN_WORDS.search(_words(request.prompt)))
-    issues += _incident(spec, outcome, probe=lambda changed: _passes(changed, request, snapshot, graph, cut_in), cut_in=cut_in)
-    issues += _prompt(spec, request, snapshot, actors, graph, ego, outcome)
+    probe = lambda changed: _passes(changed, request, snapshot, graph, cut_in)
+    issues += _incident(spec, outcome, probe=probe, cut_in=cut_in)
+    issues += _prompt(spec, request, snapshot, actors, graph, ego, outcome, probe=probe)
     if issues:
         return ValidationResult(valid=False, issues=issues)
     return ScenarioPlan(
@@ -239,7 +245,7 @@ def _physics(spec: ScenarioSpec, actors: list[ResolvedActor]) -> list[Validation
 
 
 def _passes(spec: ScenarioSpec, request: GenerationRequest, snapshot: SelectedSnapshot, graph: LaneGraph, cut_in: bool) -> bool:
-    """Would the incident check pass for this changed spec? Used to turn a failure into numbers that work."""
+    """Would the complete scenario pass after a numeric change, without searching for another fix?"""
     placed = _place(spec, request, snapshot, graph)
     if isinstance(placed, ValidationResult) or _physics(spec, placed[1]):
         return False
@@ -247,7 +253,57 @@ def _passes(spec: ScenarioSpec, request: GenerationRequest, snapshot: SelectedSn
         outcome = simulate(placed[0], placed[1], spec.actions, spec.duration_s, graph)
     except SimulationError:
         return False
-    return not _incident(spec, outcome, cut_in=cut_in)
+    return not outcome.initial_overlaps and not _incident(spec, outcome, cut_in=cut_in) and not _prompt(
+        spec, request, snapshot, placed[1], graph, placed[0], outcome)
+
+
+def _maneuver_fix(spec: ScenarioSpec, request: GenerationRequest, snapshot: SelectedSnapshot,
+                  graph: LaneGraph, code: str) -> tuple | None:
+    """Repair a cut-in only when its proposed lane change really enters the ego's path."""
+    if not CUT_IN_WORDS.search(_words(request.prompt)) or code not in ("ALREADY_IN_EGO_LANE", "EGO_LANE_NOT_ADJACENT"):
+        return None
+    actor = next((item for item in spec.actors if item.id == spec.critical_actor), None)
+    changes = [(index, action) for index, action in enumerate(spec.actions)
+               if action.actor == spec.critical_actor and action.type == "lane_change"
+               and action.direction == "into_ego_lane"]
+    if actor is None or len(changes) != 1:
+        return None
+    index, action = changes[0]
+    if code == "ALREADY_IN_EGO_LANE":
+        if actor.lane_offset != 0:
+            return None
+        options = [(offset, actor.ds_m, action.at_time_s) for offset in (-1, 1)]
+    else:
+        if actor.lane_offset == 0:
+            return None
+        times = [round(action.at_time_s - delay, 1) for delay in (0.5, 1.0, 1.5, 2.0)]
+        options = [(actor.lane_offset, ds, at) for ds in (actor.ds_m, actor.ds_m - 6, actor.ds_m - 12)
+                   for at in times if at >= 0]
+    fallback = None
+    for offset, ds, at in options:
+        new_actors = [item.model_copy(update={"lane_offset": offset, "ds_m": ds}) if item.id == actor.id else item
+                      for item in spec.actors]
+        new_actions = list(spec.actions)
+        new_actions[index] = action.model_copy(update={"at_time_s": at})
+        changed = spec.model_copy(update={"actors": new_actors, "actions": new_actions})
+        placed = _place(changed, request, snapshot, graph)
+        if isinstance(placed, ValidationResult) or _physics(changed, placed[1]):
+            continue
+        try:
+            outcome = simulate(placed[0], placed[1], changed.actions, changed.duration_s, graph)
+        except SimulationError:
+            continue
+        record = outcome.interactions[actor.id]
+        if outcome.initial_overlaps or record.in_path_first_s is None or record.ahead_at_entry is not True:
+            continue
+        note = f"{actor.id} lane_offset={offset:+d}, ds_m={ds:g}, đổi làn lúc {at:g} s"
+        candidate = changed, note
+        if not _incident(changed, outcome, cut_in=True) and not _prompt(
+            changed, request, snapshot, placed[1], graph, placed[0], outcome):
+            return candidate
+        if fallback is None:
+            fallback = candidate
+    return fallback
 
 
 def _incident(spec: ScenarioSpec, outcome, probe=None, cut_in: bool = False) -> list[ValidationIssue]:
@@ -401,7 +457,7 @@ def _ttc(record) -> str:
 
 
 def _prompt(spec: ScenarioSpec, request: GenerationRequest, snapshot: SelectedSnapshot, actors: list[ResolvedActor],
-            graph: LaneGraph, ego: ResolvedActor, outcome) -> list[ValidationIssue]:
+            graph: LaneGraph, ego: ResolvedActor, outcome, probe=None) -> list[ValidationIssue]:
     """What the prompt (or the form) states must show in the scenario: actors, behaviour, place, weather."""
     text = _words(request.prompt)
     issues: list[ValidationIssue] = []
@@ -433,7 +489,7 @@ def _prompt(spec: ScenarioSpec, request: GenerationRequest, snapshot: SelectedSn
         issues.append(_issue("PROMPT_ROAD_MISMATCH", "Prompt nói khúc cua nhưng 120 m phía trước ego gần như thẳng "
                              f"({way.heading_change(0.0, 120.0):.0f}°): chọn vị trí có tag curve.", "ego.start"))
     if ROAD_WORDS["junction"].search(text) and way is not None:
-        issues += _at_junction(spec, text, graph, way, ego, record)
+        issues += _at_junction(spec, text, graph, way, ego, record, probe)
     return issues
 
 
@@ -460,7 +516,7 @@ def _behaviour(spec: ScenarioSpec, text: str, critical: ResolvedActor, record) -
     return issues
 
 
-def _at_junction(spec: ScenarioSpec, text: str, graph: LaneGraph, way, ego: ResolvedActor, record) -> list[ValidationIssue]:
+def _at_junction(spec: ScenarioSpec, text: str, graph: LaneGraph, way, ego: ResolvedActor, record, probe=None) -> list[ValidationIssue]:
     ahead = way.junction_ahead(0.0, way.length)
     if ahead is None:
         return [_issue("PROMPT_ROAD_MISMATCH", "Prompt nói giao lộ nhưng đường đi của ego không qua giao lộ nào: dùng "
@@ -473,11 +529,16 @@ def _at_junction(spec: ScenarioSpec, text: str, graph: LaneGraph, way, ego: Reso
     if record.ego_travel_at_min_m is not None:
         front = record.ego_travel_at_min_m + ego.length_m / 2
         if not distance - JUNCTION_BEFORE_M <= front <= distance + JUNCTION_INSIDE_M:
+            moved = _move_start(spec, graph, ego, (distance - 12.5) - front) if probe is not None else None
+            if moved is not None and not probe(moved[0]):
+                moved = None
+            site_hint = (" Vị trí này không thể tự dời mà vẫn giữ sự cố hợp lệ; chọn điểm ego khác bằng "
+                         "search_cut_in_sites gần ngã tư." if moved is None and CUT_IN_WORDS.search(text) else "")
             issues.append(_issue("INCIDENT_NOT_AT_JUNCTION", f"Prompt nói giao lộ nhưng sự cố xảy ra khi ego đã đi {front:.0f} m, "
                                  f"còn giao lộ cách vị trí xuất phát {distance:.0f} m: sự cố phải xảy ra trong khoảng "
                                  f"{max(distance - JUNCTION_BEFORE_M, 0):.0f}-{distance + JUNCTION_INSIDE_M:.0f} m (chỉnh vị trí "
-                                 "xuất phát của ego, thời điểm hoặc tốc độ).", "ego.start",
-                                 _move_start(spec, graph, ego, (distance - 12.5) - front)))
+                                 "xuất phát của ego, thời điểm hoặc tốc độ)." + site_hint, "ego.start",
+                                 moved))
     return issues
 
 

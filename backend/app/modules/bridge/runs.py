@@ -26,6 +26,7 @@ from app.modules.bridge.schemas import (
     BridgeRunRejected,
 )
 from app.modules.bridge.service import now
+from app.modules.bridge.verdict import collision_verdict
 from app.modules.execution.router import refresh_suite_status
 from app.shared.config import get_settings
 from app.shared.infrastructure.audit import record_audit
@@ -313,7 +314,8 @@ async def _apply(session: AsyncSession, bridge_id: int, kind: str, message: dict
         RunResult(
             project_id=job.project_id, run_job_id=job.id, test_case_id=case.id,
             revision=case.revision, config_sha256=case.config_sha256, xosc_sha256=expected_sha,
-            verdict=body.verdict, metrics={**body.metrics, **({"map_name": body.map_name} if body.map_name else {})},
+            verdict=collision_verdict(body.verdict, body.metrics),
+            metrics={**body.metrics, **({"map_name": body.map_name} if body.map_name else {})},
             scenario_runner_exit_code=body.exit_code, duration_ms=body.duration_ms,
         )
     )

@@ -328,11 +328,21 @@ def parse_result(workdir: Path, exit_code: int | None, wall_ms: int) -> Outcome:
     entries = data.get("criteria") or []
     criteria = [item for item in entries if item.get("name") != "Duration"]
     duration = next((item for item in entries if item.get("name") == "Duration"), None)
-    collisions = sum(_number(item.get("actual")) for item in criteria if item.get("name") == "CollisionTest")
+    collision_tests = [item for item in criteria if item.get("name") == "CollisionTest"]
+    if not collision_tests:
+        raise CaseFailed("SCENARIO_RUNNER_ERROR", "Báo cáo ScenarioRunner thiếu CollisionTest nên không thể đánh giá kết quả.")
+    try:
+        counts = [float(item["actual"]) for item in collision_tests]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise CaseFailed("SCENARIO_RUNNER_ERROR", "CollisionTest không có số lần va chạm hợp lệ.") from exc
+    if any(not math.isfinite(count) or count < 0 for count in counts):
+        raise CaseFailed("SCENARIO_RUNNER_ERROR", "CollisionTest không có số lần va chạm hợp lệ.")
+    collisions = sum(counts)
     scenario_s = _number(duration.get("actual")) if duration else None
-    # The exit code is not reliable (120 when stdout cannot be flushed): the report decides the verdict.
+    # This run judges ego safety by collision. Other ScenarioRunner criteria remain in metrics for diagnosis.
+    # The exit code is not reliable (120 when stdout cannot be flushed).
     return Outcome(
-        verdict="PASS" if data.get("success") else "FAIL",
+        verdict="FAIL" if collisions > 0 else "PASS",
         exit_code=exit_code,
         duration_ms=int(scenario_s * 1000) if scenario_s else wall_ms,
         metrics={
@@ -342,6 +352,7 @@ def parse_result(workdir: Path, exit_code: int | None, wall_ms: int) -> Outcome:
             "scenario_duration_s": round(scenario_s, 3) if scenario_s else None,
             "wall_time_ms": wall_ms,
             "runner": "scenario_runner",
+            "runner_success": bool(data.get("success")),
         },
     )
 

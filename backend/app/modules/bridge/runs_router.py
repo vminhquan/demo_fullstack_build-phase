@@ -15,6 +15,7 @@ from app.modules.bridge.schemas import (
     SimulatorRunSummary,
 )
 from app.modules.bridge.service import bridge_online
+from app.modules.bridge.verdict import collision_count, collision_verdict
 from app.modules.identity.dependencies import Principal, require
 from app.modules.testcase.service import lock_for_run, user_names
 from app.shared.domain.errors import Conflict, NotFound
@@ -39,12 +40,15 @@ ACTIVE = (RunJobStatus.QUEUED, RunJobStatus.CLAIMED, RunJobStatus.RUNNING)
 def job_view(job: RunJob, case: TestCase, result: RunResult | None) -> SimulatorRunJob:
     metrics = (result.metrics if result else None) or {}
     ttc = metrics.get("min_ttc_seconds")
+    collisions = collision_count(metrics)
+    collision = (collisions > 0 if collisions is not None else metrics.get("collision")
+                 if isinstance(metrics.get("collision"), bool) else None)
     return SimulatorRunJob(
         test_case_id=case.id, case_key=case.case_key, title=case.title, map_code=case.map_code,
         adversary_type=case.adversary_type, environment_code=case.environment_code, danger_level=case.danger_level,
         revision=result.revision if result else case.revision, status=job.status,
-        verdict=result.verdict if result else None,
-        collision=(bool(metrics.get("collision")) or int(metrics.get("collision_count") or 0) > 0) if result else None,
+        verdict=collision_verdict(result.verdict, metrics) if result else None,
+        collision=collision if result else None,
         min_ttc_seconds=float(ttc) if isinstance(ttc, int | float) else None,
         duration_ms=result.duration_ms if result else None, exit_code=result.scenario_runner_exit_code if result else None,
         metrics=metrics, error_code=job.error_code, error_message=job.error_message,
@@ -75,7 +79,7 @@ async def run_views(session: AsyncSession, runs: list[TestSuiteRun], *, with_job
     for run in runs:
         jobs = [(job, case, result) for job, case, result in rows if job.suite_run_id == run.id]
         connection = connections.get(run.bridge_connection_id or 0)
-        verdicts = [result.verdict for _, _, result in jobs if result is not None]
+        verdicts = [collision_verdict(result.verdict, result.metrics or {}) for _, _, result in jobs if result is not None]
         views.append(
             SimulatorRunDetail(
                 id=run.id, status=run.status, created_at=run.created_at, started_at=run.started_at, finished_at=run.finished_at,

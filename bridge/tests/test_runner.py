@@ -124,6 +124,27 @@ def test_parse_result_reads_the_real_report_shape(tmp_path) -> None:
     assert [item["name"] for item in outcome.metrics["criteria"]] == ["CollisionTest"]
 
 
+def test_no_collision_passes_even_when_another_runner_criterion_fails(tmp_path) -> None:
+    (tmp_path / "r.json").write_text(json.dumps({
+        "scenario": "cut-in", "success": False,
+        "criteria": [
+            {"name": "CollisionTest", "actual": 0, "success": True},
+            {"name": "KeepLaneTest", "actual": 1, "success": False},
+            {"name": "Duration", "actual": 10, "success": True},
+        ],
+    }))
+    outcome = runner.parse_result(tmp_path, 0, 12000)
+    assert outcome.verdict == "PASS" and outcome.metrics["collision"] is False
+    assert outcome.metrics["runner_success"] is False
+    assert any(item["name"] == "KeepLaneTest" for item in outcome.metrics["criteria"])
+
+
+def test_report_without_collision_measurement_is_an_error(tmp_path) -> None:
+    (tmp_path / "r.json").write_text(json.dumps({"success": False, "criteria": [{"name": "Duration", "actual": 10}]}))
+    with pytest.raises(runner.CaseFailed, match="thiếu CollisionTest"):
+        runner.parse_result(tmp_path, 0, 12000)
+
+
 def test_missing_report_is_a_runner_error(tmp_path) -> None:
     (tmp_path / "runner.log").write_text("The scenario cannot be loaded")
     with pytest.raises(runner.CaseFailed) as exc:

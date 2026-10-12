@@ -34,6 +34,9 @@ Quy tắc:
   mù ban đêm: DustStorm chỉ có ban ngày) thì đặt lighting (day/sunset/night). Không từ chối vì thời tiết/ánh sáng. Thiếu thông tin hoặc không tìm ra vị trí KHÔNG phải lý do từ chối.
 - Hành vi trong prompt phải đúng: tạt đầu = tác nhân ở làn bên cạnh đổi vào làn ego ở PHÍA TRƯỚC ego; phanh gấp =
   tác nhân phía trước ego brake_to_stop; sự cố không được đến từ phía sau ego trừ khi prompt nói vậy.
+- Với tạt đầu, lane_offset=0 luôn sai dù có lane_change: chọn lane_offset ±1 có thật tại vị trí tác nhân.
+  Nếu làn kề biến mất trước at_time_s, đổi làn sớm hơn; nếu lỗi vị trí giao lộ không có cách tự chỉnh,
+  gọi search_cut_in_sites để chọn ego.start khác, đừng nộp lại cùng một điểm với lane_offset đổi qua lại.
 - Prompt nói giao lộ/ngã tư: ego xuất phát trước giao lộ (find_ego_starts tags junction_approach /
   intersection_4way_approach, xem junction_ahead_m) và sự cố phải xảy ra trong khoảng 40 m trước giao lộ.
   Nếu cần tạt đầu ở ngã tư, tìm tags=["intersection_4way_approach","multi_lane"] và để cả
