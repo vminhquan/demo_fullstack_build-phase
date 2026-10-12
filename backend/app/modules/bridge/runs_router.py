@@ -7,6 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.bridge.hub import hub
 from app.modules.bridge.schemas import (
+    ADS_OPTIONS,
+    AdsOption,
     CaseRunEntry,
     SimulatorRunBridge,
     SimulatorRunCreate,
@@ -84,7 +86,7 @@ async def run_views(session: AsyncSession, runs: list[TestSuiteRun], *, with_job
             SimulatorRunDetail(
                 id=run.id, status=run.status, created_at=run.created_at, started_at=run.started_at, finished_at=run.finished_at,
                 dispatched_at=run.dispatched_at, accepted_at=run.accepted_at,
-                requested_by=run.requested_by, requested_by_name=names.get(run.requested_by),
+                requested_by=run.requested_by, requested_by_name=names.get(run.requested_by), ads=run.ads,
                 bridge=SimulatorRunBridge(connection_uid=connection.uid, name=connection.bridge.name, online=bridge_online(connection.bridge))
                 if connection else None,
                 total=len(jobs),
@@ -104,6 +106,12 @@ async def get_run(session: AsyncSession, project_id: int, run_id: int, *, locked
     if run is None or run.project_id != project_id or run.bridge_connection_id is None:
         raise NotFound("Simulator run not found")
     return run
+
+
+@router.get("/ads", response_model=list[AdsOption])
+async def list_ads(actor: Principal = Depends(require("suite:read"))) -> list[AdsOption]:
+    """ADS the Test Suite screen offers to drive the ego of a run."""
+    return [AdsOption(id=key, **value) for key, value in ADS_OPTIONS.items()]
 
 
 @router.post("", response_model=SimulatorRunDetail, status_code=status.HTTP_202_ACCEPTED)
@@ -133,7 +141,7 @@ async def create_simulator_run(
         raise Conflict("Không có test case nào chạy được (cần Đã phê duyệt và có tệp .xosc)", {"skipped": [{"id": i, "reason": r} for i, r in skipped]})
     run = TestSuiteRun(
         project_id=actor.project_id, suite_id=None, requested_by=actor.id, status=SuiteRunStatus.QUEUED,
-        total_jobs=len(runnable), bridge_connection_id=connection.id,
+        total_jobs=len(runnable), bridge_connection_id=connection.id, ads=body.ads,
     )
     session.add(run)
     await session.flush()
@@ -141,7 +149,8 @@ async def create_simulator_run(
         session.add(RunJob(project_id=actor.project_id, suite_run_id=run.id, test_case_id=case.id, idempotency_key=f"sim:{run.id}:case:{case.id}"))
     await record_audit(
         session, project_id=actor.project_id, actor_user_id=actor.id, action="SIMULATOR_RUN_REQUESTED", entity_type="TEST_SUITE_RUN",
-        entity_id=run.id, after_data={"connection_uid": connection.uid, "total": len(runnable), "skipped": [i for i, _ in skipped]},
+        entity_id=run.id, after_data={"connection_uid": connection.uid, "ads": body.ads, "total": len(runnable),
+                                      "skipped": [i for i, _ in skipped]},
     )
     await session.commit()
     await hub.request_dispatch(connection.bridge_id, run.id)

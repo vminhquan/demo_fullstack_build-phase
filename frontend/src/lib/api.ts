@@ -130,8 +130,12 @@ export type SimulatorRun = {
   id: number; status: SimulatorRunStatus; created_at: string; started_at: string | null; finished_at: string | null;
   dispatched_at: string | null; accepted_at: string | null; requested_by: number; requested_by_name: string | null;
   bridge: { connection_uid: string; name: string; online: boolean } | null;
+  /** ADS that drove the ego; null for runs made before the choice existed (no-brain ego). */
+  ads: string | null;
   total: number; done: number; passed: number; failed: number; errors: number; test_case_ids: number[];
 };
+/** ADS the Test Suite screen offers to drive the ego of a Simulator run. */
+export type AdsOption = { id: string; name: string; description: string };
 export type SimulatorRunDetail = SimulatorRun & { jobs: SimulatorRunJob[]; skipped: { id: number; reason: string }[] };
 export type CaseRunEntry = { run_id: number; created_at: string; requested_by_name: string | null; job: SimulatorRunJob };
 export type SuiteRun = { id: number; suite_id: number; status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED"; total_jobs: number; completed_jobs: number; created_at: string; started_at: string | null; finished_at: string | null };
@@ -324,7 +328,8 @@ export const api = {
   discardCases: (token: string, ids: number[]) => request<{ results: BatchItemResult[] }>("/test-cases/batch/discard", { method: "POST", body: JSON.stringify({ ids }) }, token),
   restoreCase: (token: string, id: Id) => request<TestCase>(`/test-cases/${id}/restore`, { method: "POST" }, token),
   /** Putting cases into a simulator run locks them for good; cases no longer APPROVED come back in `skipped`. */
-  createSimulatorRun: (token: string, connectionUid: string, testCaseIds: number[]) => request<SimulatorRunDetail>("/simulator-runs", { method: "POST", body: JSON.stringify({ connection_uid: connectionUid, test_case_ids: testCaseIds }) }, token),
+  createSimulatorRun: (token: string, connectionUid: string, testCaseIds: number[], ads: string) => request<SimulatorRunDetail>("/simulator-runs", { method: "POST", body: JSON.stringify({ connection_uid: connectionUid, test_case_ids: testCaseIds, ads }) }, token),
+  listAds: (token: string) => request<AdsOption[]>("/simulator-runs/ads", {}, token),
   listSimulatorRuns: (token: string) => request<SimulatorRun[]>("/simulator-runs", {}, token),
   getSimulatorRun: (token: string, id: Id) => request<SimulatorRunDetail>(`/simulator-runs/${id}`, {}, token),
   listCaseRuns: (token: string, caseId: Id) => request<CaseRunEntry[]>(`/simulator-runs/by-case/${caseId}`, {}, token),

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -150,9 +150,29 @@ class BridgeJobFailed(BaseModel):
 # ---- Simulator Runner API (frontend) ----
 
 
+# ADS a Simulator run can put in the ego's seat. The Bridge maps each id to a ScenarioRunner controller
+# (scenario_forge_bridge.runner.ADS_CONTROLLERS); add an id in both places. Validation runs for agent2 never use one.
+AdsId = Literal["simple"]
+ADS_OPTIONS: dict[str, dict[str, str]] = {
+    "simple": {
+        "name": "ADS Simple",
+        "description": "Giữ làn, chạy đúng tốc độ kịch bản và phanh khi có xe hoặc người phía trước "
+                       "(ScenarioRunner simple_vehicle_control). Không đánh lái né, bỏ qua đèn giao thông.",
+    },
+}
+
+
+class AdsOption(BaseModel):
+    id: AdsId
+    name: str
+    description: str
+
+
 class SimulatorRunCreate(BaseModel):
     connection_uid: str = Field(min_length=1, max_length=32)
     test_case_ids: list[int] = Field(min_length=1, max_length=500)
+    # Required: the user picks who drives the ego on the Test Suite screen.
+    ads: AdsId
 
 
 class SimulatorRunBridge(BaseModel):
@@ -194,6 +214,8 @@ class SimulatorRunSummary(BaseModel):
     requested_by: int
     requested_by_name: str | None
     bridge: SimulatorRunBridge | None
+    # None: a run from before the ADS choice (no-brain ego).
+    ads: str | None = None
     total: int
     done: int
     passed: int

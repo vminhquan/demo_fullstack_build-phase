@@ -27,8 +27,9 @@ from scenario_forge_bridge.config import BridgeConfig
 Log = Callable[[str], None]
 Send = Callable[[dict], Awaitable[None]]
 
-# Who drives the ego in a test run (`scenario-forge-bridge run --ads <name>`). Validation runs for agent2 always use
-# NO_BRAIN: ScenarioRunner's default NpcVehicleControl keeps the lane and the scenario's speed and never reacts.
+# Who drives the ego in a test run: run.assign's `ads`, picked on the Test Suite screen (backend ADS_OPTIONS; None for
+# older runs). Validation runs for agent2 always use NO_BRAIN: ScenarioRunner's default NpcVehicleControl keeps the
+# lane and the scenario's speed and never reacts.
 # ScenarioRunner v0.9.15/16 refuses --agent with --openscenario ("Agents are currently only compatible with route
 # scenarios"), so an ADS is one of its OpenSCENARIO controllers, assigned to the ego in the Init (ControllerAction).
 NO_BRAIN = "no-brain"
@@ -509,10 +510,8 @@ class RunExecutor:
     and `send` goes through whichever socket is open at that moment.
     """
 
-    def __init__(self, cfg: BridgeConfig, send: Send, log: Log, ads: str = NO_BRAIN) -> None:
+    def __init__(self, cfg: BridgeConfig, send: Send, log: Log) -> None:
         self.cfg, self.send, self.log = cfg, send, log
-        # Who drives the ego in test runs (run.assign); validate.request always runs the no-brain ego.
-        self.ads = ads
         self.queue: asyncio.Queue[dict] = asyncio.Queue()
         self.seen: set[int] = set()
         # Reports not yet acknowledged by the backend, in send order: re-sent after every reconnect so a
@@ -546,6 +545,13 @@ class RunExecutor:
             await self.send({"type": "run.accepted", "run_id": run_id})
             return
         self.seen.add(run_id)
+        ads = message.get("ads") or NO_BRAIN
+        if ads not in ADS_CHOICES:
+            # A backend offering an ADS this Bridge does not have yet: update the Bridge.
+            self.log(f"Không chạy được phiên {run_id}: Bridge này chưa có ADS '{ads}'.")
+            await self.report({"type": "run.rejected", "run_id": run_id, "reason": "UNKNOWN_ADS",
+                               "message": f"Bridge chưa có ADS '{ads}' (có: {', '.join(ADS_CHOICES)}). Cập nhật Bridge rồi chạy lại."})
+            return
         problems = runner_problems(self.cfg)
         if problems:
             self.log("Không chạy được phiên " + str(run_id) + ": " + "; ".join(problems))
@@ -558,7 +564,8 @@ class RunExecutor:
             return
         await self.send({"type": "run.accepted", "run_id": run_id})
         count = len(message.get("test_cases") or [])
-        self.log(f"Nhận phiên chạy {run_id}: {count} test case" + (f" (đợi {self.queue.qsize()} phiên trước)" if self.queue.qsize() else ""))
+        self.log(f"Nhận phiên chạy {run_id}: {count} test case · ego: {ads}"
+                 + (f" (đợi {self.queue.qsize()} phiên trước)" if self.queue.qsize() else ""))
         await self.queue.put(message)
 
     async def serve(self) -> None:
@@ -571,14 +578,15 @@ class RunExecutor:
 
     async def _run(self, message: dict) -> None:
         run_id = message["run_id"]
+        ads = message.get("ads") or NO_BRAIN
         cases = message.get("test_cases") or []
         for index, case in enumerate(cases, 1):
-            self.log(f"[{run_id}] {index}/{len(cases)} {case.get('case_key')} · {case.get('map_name')}")
-            await self.report(await self._run_one(run_id, case))
+            self.log(f"[{run_id}] {index}/{len(cases)} {case.get('case_key')} · {case.get('map_name')} · ego: {ads}")
+            await self.report(await self._run_one(run_id, case, ads))
         await self.report({"type": "run.completed", "run_id": run_id})
         self.log(f"[{run_id}] Xong phiên chạy.")
 
-    async def _run_one(self, run_id: int, case: dict) -> dict:
+    async def _run_one(self, run_id: int, case: dict, ads: str = NO_BRAIN) -> dict:
         base = {"run_id": run_id, "test_case_id": case["test_case_id"]}
         try:
             xosc = case.get("xosc") or ""
@@ -590,7 +598,7 @@ class RunExecutor:
                     raise CaseFailed("CARLA_UNREACHABLE", f"Không kết nối được CARLA {probe.host}:{probe.port}: {probe.error}")
                 await self.report({"type": "job.started", **base})
                 workdir = config_store.config_dir() / "runs" / str(run_id) / str(case.get("case_key") or case["test_case_id"])
-                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log, self.ads)
+                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log, ads)
         except CaseFailed as exc:
             self.log(f"  ✗ {case.get('case_key')}: {exc.code}")
             return {"type": "job.failed", **base, "error_code": exc.code, "error_message": (exc.message or None) and exc.message[-4000:]}
@@ -598,7 +606,7 @@ class RunExecutor:
             self.log(f"  ✗ {case.get('case_key')}: {exc}")
             return {"type": "job.failed", **base, "error_code": "BRIDGE_ERROR", "error_message": f"{type(exc).__name__}: {exc}"[:4000]}
         collision = f", {outcome.metrics['collision_count']} va chạm" if outcome.metrics["collision"] else ""
-        self.log(f"  ✓ {case.get('case_key')}: {outcome.verdict}{collision} ({outcome.duration_ms / 1000:.1f} s, ego: {self.ads})")
+        self.log(f"  ✓ {case.get('case_key')}: {outcome.verdict}{collision} ({outcome.duration_ms / 1000:.1f} s, ego: {ads})")
         return {"type": "job.completed", **base, "revision": case["revision"], "xosc_sha256": case["xosc_sha256"],
                 "map_name": case.get("map_name"), "verdict": outcome.verdict, "exit_code": outcome.exit_code,
                 "duration_ms": outcome.duration_ms, "metrics": outcome.metrics}
@@ -626,7 +634,7 @@ class RunExecutor:
                 # Validations run one at a time: one folder keeps the last run for diagnosis without piling up.
                 workdir = config_store.config_dir() / "validations" / "latest"
                 # Same camera setting as test runs (cfg.camera): the CARLA window follows the ego unless set to off.
-                # Always the no-brain ego, whatever --ads says: the scenario is valid only if it then collides.
+                # Always the no-brain ego, whatever ADS test runs use: the scenario is valid only if it then collides.
                 outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log, NO_BRAIN)
         except CaseFailed as exc:
             self.log(f"  ✗ kiểm tra {name[:8]}: {exc.code}")

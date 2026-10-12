@@ -71,6 +71,8 @@ async def build_assign(session: AsyncSession, run: TestSuiteRun) -> dict[str, An
         "type": "run.assign",
         "run_id": run.id,
         "project_id": run.project_id,
+        # Who drives the ego (Bridge: ADS_CONTROLLERS); None for older runs = the no-brain ego.
+        "ads": run.ads,
         "test_cases": [
             {
                 "test_case_id": case.id,

@@ -16,7 +16,7 @@ from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.channel import ChannelRejected
 from scenario_forge_bridge.channel import run as run_channel
 from scenario_forge_bridge.config import Connection
-from scenario_forge_bridge.runner import ADS_CHOICES, NO_BRAIN, runner_problems, version_mismatch
+from scenario_forge_bridge.runner import runner_problems, version_mismatch
 
 app = typer.Typer(
     add_completion=False,
@@ -49,10 +49,10 @@ def root(version: bool = typer.Option(False, "--version", callback=version_callb
     """Scenario Forge Bridge."""
 
 
-def _run_forever(cfg, token: str, ads: str = NO_BRAIN) -> None:
+def _run_forever(cfg, token: str) -> None:
     log(f"Đang mở kênh tới {cfg.ws_url} (Ctrl+C để dừng)")
     try:
-        asyncio.run(run_channel(cfg, token, log, ads=ads))
+        asyncio.run(run_channel(cfg, token, log))
     except ChannelRejected as exc:
         fail(str(exc))
     except KeyboardInterrupt:
@@ -117,18 +117,13 @@ def pair(
 
 
 @app.command()
-def run(
-    ads: str = typer.Option(NO_BRAIN, "--ads", help=f"Ai lái xe ego khi chạy test: {', '.join(ADS_CHOICES)}. "
-                            "Mặc định no-brain (giữ làn, giữ tốc độ, không né). Kiểm tra kịch bản cho agent2 luôn dùng no-brain."),
-) -> None:
+def run() -> None:
     """Giữ Bridge trực tuyến: kết nối máy chủ, gửi heartbeat và trạng thái CARLA, tự kết nối lại khi mất mạng."""
-    if ads not in ADS_CHOICES:
-        fail(f"Không có ADS '{ads}'. Chọn một trong: {', '.join(ADS_CHOICES)}")
     cfg = config_store.load()
     token = credentials.load_token()
     if not token:
         fail("Máy này chưa được ghép. Chạy `scenario-forge-bridge pair <mã 6 số>` trước.")
-    _run_forever(cfg, token, ads)
+    _run_forever(cfg, token)
 
 
 @app.command()

@@ -386,9 +386,11 @@ def test_test_runs_use_the_ads_and_validations_the_no_brain_ego(cfg, tmp_path) -
         sent.append(message)
 
     async def main() -> dict:
-        executor = runner.RunExecutor(cfg, send, lambda _: None, ads="simple")
+        executor = runner.RunExecutor(cfg, send, lambda _: None)
         serving = asyncio.create_task(executor.serve())
-        await executor.accept({"type": "run.assign", "run_id": 3, "test_cases": [case(xosc=EGO_XOSC, xosc_sha256=digest)]})
+        # The ADS comes with the run (picked on the Test Suite screen), not from the Bridge's command line.
+        await executor.accept({"type": "run.assign", "run_id": 3, "ads": "simple",
+                               "test_cases": [case(xosc=EGO_XOSC, xosc_sha256=digest)]})
         while not any(m["type"] == "run.completed" for m in sent):
             await asyncio.sleep(0.05)
         serving.cancel()
@@ -400,3 +402,12 @@ def test_test_runs_use_the_ads_and_validations_the_no_brain_ego(cfg, tmp_path) -
     assert ego_controller(ran)["module"] == "simple_vehicle_control" and ego_controller(validated) is None
     completed = next(m for m in sent if m["type"] == "job.completed")
     assert completed["metrics"]["ego_driver"] == "simple" and checked["status"] == "ok"
+
+
+def test_a_run_without_ads_keeps_the_no_brain_ego_and_an_unknown_one_is_rejected(cfg, tmp_path) -> None:
+    digest = hashlib.sha256(EGO_XOSC.encode()).hexdigest()
+    sent = run_executor(cfg, {"type": "run.assign", "run_id": 4, "test_cases": [case(xosc=EGO_XOSC, xosc_sha256=digest)]})
+    ran = (tmp_path / "config" / "runs" / "4" / "TC-000171" / "TC-000171.xosc").read_text()
+    assert ego_controller(ran) is None and sent[-2]["metrics"]["ego_driver"] == "no-brain"
+    rejected = run_executor(cfg, {"type": "run.assign", "run_id": 5, "ads": "autoware", "test_cases": [case()]})
+    assert rejected[0]["type"] == "run.rejected" and rejected[0]["reason"] == "UNKNOWN_ADS"

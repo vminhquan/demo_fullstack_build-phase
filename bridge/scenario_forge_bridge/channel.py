@@ -16,7 +16,7 @@ from scenario_forge_bridge import config as config_store
 from scenario_forge_bridge.carla_catalog import CarlaUnavailable
 from scenario_forge_bridge.carla_probe import probe_carla
 from scenario_forge_bridge.config import BridgeConfig, Connection
-from scenario_forge_bridge.runner import NO_BRAIN, RunExecutor, runner_problems
+from scenario_forge_bridge.runner import RunExecutor, runner_problems
 
 HEARTBEAT_SECONDS = 15
 MAX_BACKOFF_SECONDS = 30
@@ -194,7 +194,7 @@ async def _session(cfg: BridgeConfig, token: str, log: Log, stop_when_unlinked: 
     return False
 
 
-async def run(cfg: BridgeConfig, token: str, log: Log, *, stop_when_unlinked: bool = True, ads: str = NO_BRAIN) -> None:
+async def run(cfg: BridgeConfig, token: str, log: Log, *, stop_when_unlinked: bool = True) -> None:
     state: dict = {"ws": None}
 
     async def send(message: dict) -> None:
@@ -209,9 +209,8 @@ async def run(cfg: BridgeConfig, token: str, log: Log, *, stop_when_unlinked: bo
 
     problems = runner_problems(cfg)
     log("Simulator Runner sẵn sàng." if not problems else "Simulator Runner chưa sẵn sàng: " + "; ".join(problems))
-    log(f"Ego khi chạy test: {ads}" + ("" if ads == NO_BRAIN else " (ADS)") + " · khi kiểm tra kịch bản cho agent2: no-brain")
     # The executor outlives socket sessions so a reconnect never interrupts a running scenario.
-    executor = RunExecutor(cfg, send, log, ads)
+    executor = RunExecutor(cfg, send, log)
     serving = asyncio.create_task(executor.serve())
     try:
         await _reconnect_loop(cfg, token, log, stop_when_unlinked, state, executor)

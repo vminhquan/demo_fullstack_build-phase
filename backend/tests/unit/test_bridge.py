@@ -121,3 +121,19 @@ def test_agent_link_is_offered_only_when_configured(monkeypatch) -> None:
     uid, expires, signature = link["token"].rsplit(".", 2)
     assert uid == "BRG-1" and int(expires) > 0
     assert signature == hmac.new(b"s3cret", f"{uid}.{expires}".encode(), hashlib.sha256).hexdigest()
+
+
+def test_a_simulator_run_must_name_a_known_ads() -> None:
+    import asyncio
+
+    from pydantic import ValidationError
+
+    from app.modules.bridge.runs_router import list_ads
+    from app.modules.bridge.schemas import SimulatorRunCreate
+
+    assert SimulatorRunCreate(connection_uid="CONN-1", test_case_ids=[1], ads="simple").ads == "simple"
+    for body in ({"connection_uid": "CONN-1", "test_case_ids": [1]},
+                 {"connection_uid": "CONN-1", "test_case_ids": [1], "ads": "autoware"}):
+        with pytest.raises(ValidationError):
+            SimulatorRunCreate(**body)
+    assert [option.id for option in asyncio.run(list_ads(actor=None))] == ["simple"]

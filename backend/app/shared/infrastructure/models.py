@@ -618,6 +618,8 @@ class TestSuiteRun(IdTimestampMixin, Base):
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     total_jobs: Mapped[int] = mapped_column(Integer, default=0)
     completed_jobs: Mapped[int] = mapped_column(Integer, default=0)
+    # ADS driving the ego on the Bridge (app.modules.bridge.schemas.ADS_OPTIONS); NULL = older runs, no-brain ego.
+    ads: Mapped[str | None] = mapped_column(String(32))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     jobs: Mapped[list[RunJob]] = relationship(

@@ -13,6 +13,8 @@ import { Icon } from "@/shared/ui/icons";
 import { ERROR_LABELS, jobStatus, runBadge, runStatusText, useCaseRuns, useSimulatorRun, useSimulatorRuns } from "./run-store";
 
 const runCode = (id: number) => `SIM-${String(id).padStart(4, "0")}`;
+/** Who drove the ego: the ADS picked for the run, or the no-brain ego of runs made before that choice. */
+const egoDriver = (ads: string | null) => (ads ? `ADS ${ads}` : "no-brain");
 
 function Heading({ title, description, actions }: { title: string; description: React.ReactNode; actions?: React.ReactNode }) {
   return (
@@ -90,6 +92,7 @@ export function SimRunListScreen() {
                   <th>Tạo lúc</th>
                   <th>Người tạo</th>
                   <th>Bridge</th>
+                  <th>ADS</th>
                   <th>Test case</th>
                   <th>Kết quả</th>
                   <th>Trạng thái</th>
@@ -105,6 +108,7 @@ export function SimRunListScreen() {
                     <td>{formatDate(run.created_at)}</td>
                     <td>{run.requested_by_name ?? "—"}</td>
                     <td>{run.bridge?.name ?? "—"}</td>
+                    <td>{egoDriver(run.ads)}</td>
                     <td>{run.total}</td>
                     <td><Progress run={run} /></td>
                     <td><span className={runBadge[run.status]}>{runStatusText(run)}</span></td>
@@ -141,7 +145,7 @@ export function SimRunDetailScreen() {
     <main className="main">
       <Heading
         title={`Phiên chạy ${runCode(run.id)}`}
-        description={<>{run.requested_by_name ?? "—"} · tạo {formatDate(run.created_at)} · {run.total} test case{run.bridge ? <> · chạy trên {run.bridge.name}</> : null}</>}
+        description={<>{run.requested_by_name ?? "—"} · tạo {formatDate(run.created_at)} · {run.total} test case{run.bridge ? <> · chạy trên {run.bridge.name}</> : null} · ego: {egoDriver(run.ads)}</>}
         actions={<span className={runBadge[run.status]}>{runStatusText(run)}</span>}
       />
       <BackLink href={p("/simulator-runs")}>Simulator Runner</BackLink>

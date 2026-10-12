@@ -5,7 +5,7 @@ import Link from "next/link";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 
-import { api, ApiError, TestCase } from "@/lib/api";
+import { AdsOption, api, ApiError, TestCase } from "@/lib/api";
 import { buildZip, ZipEntry } from "@/lib/zip";
 import { useSimulatorRuns } from "@/features/simulator-runs/run-store";
 import { Bridge, useBridges } from "@/features/startup/bridge-store";
@@ -41,6 +41,9 @@ export function ApprovedTestSuiteScreen() {
   const { data: runs } = useSimulatorRuns();
   const { bridges } = useBridges(session?.active_project?.id);
   const [exporting, setExporting] = useState(false);
+  // ADS that drives the ego in the run; the user must pick one (nothing is preselected).
+  const [adsOptions, setAdsOptions] = useState<AdsOption[]>([]);
+  const [ads, setAds] = useState("");
   const { confirm, dialog } = useConfirm();
   const [notice, setNotice] = useState("");
   // Number of Simulator Runner runs that include each case.
@@ -94,6 +97,11 @@ export function ApprovedTestSuiteScreen() {
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (!session) return;
+    api.listAds(session.access_token).then(setAdsOptions).catch(() => setAdsOptions([]));
+  }, [session]);
+
   function apply(event: FormEvent) {
     event.preventDefault();
     router.push(p(`/test-suite?${toQuery(draft).toString()}`));
@@ -123,19 +131,20 @@ export function ApprovedTestSuiteScreen() {
   }
   async function startRun(bridge: Bridge) {
     const project = session?.active_project;
-    if (!session || !project || selected.size === 0) return;
+    const driver = adsOptions.find((option) => option.id === ads);
+    if (!session || !project || selected.size === 0 || !driver) return;
     setError("");
     setNotice("");
     const ok = await confirm({
-      title: `Chạy ${selected.size} test case trên ${bridge.name}?`,
-      message: "Backend gửi cả phiên chạy xuống Bridge để chạy trên CARLA. Test case đưa vào chạy sẽ bị khóa chỉnh sửa vĩnh viễn.",
+      title: `Chạy ${selected.size} test case trên ${bridge.name} với ${driver.name}?`,
+      message: `Xe ego do ${driver.name} lái: va chạm là FAIL, né được là PASS. Backend gửi cả phiên chạy xuống Bridge để chạy trên CARLA. Test case đưa vào chạy sẽ bị khóa chỉnh sửa vĩnh viễn.`,
       confirmLabel: "Chạy",
       tone: "default",
     });
     if (!ok) return;
     try {
       // The backend locks the approved cases, skips the rest and sends run.assign to the Bridge.
-      const run = await api.createSimulatorRun(session.access_token, bridge.connection_uid, [...selected.keys()]);
+      const run = await api.createSimulatorRun(session.access_token, bridge.connection_uid, [...selected.keys()], driver.id);
       router.push(p(`/simulator-runs/${run.id}${run.skipped.length ? `?skipped=${run.skipped.length}` : ""}`));
     } catch (reason) {
       setError(reason instanceof ApiError ? reason.message : "Không tạo được phiên chạy.");
@@ -199,6 +208,9 @@ export function ApprovedTestSuiteScreen() {
           <RunnerMenu
             count={selected.size}
             bridges={bridges}
+            adsOptions={adsOptions}
+            ads={ads}
+            onAdsChange={setAds}
             exporting={exporting}
             startUpHref={p("/start-up")}
             onRun={(bridge) => void startRun(bridge)}
@@ -314,9 +326,12 @@ export function ApprovedTestSuiteScreen() {
 }
 
 /** "Simulator Runner" dropdown: run on one connected Scenario Forge Bridge, or download every selected .xosc as a ZIP. */
-function RunnerMenu({ count, bridges, exporting, startUpHref, onRun, onExport }: {
+function RunnerMenu({ count, bridges, adsOptions, ads, onAdsChange, exporting, startUpHref, onRun, onExport }: {
   count: number;
   bridges: Bridge[];
+  adsOptions: AdsOption[];
+  ads: string;
+  onAdsChange: (ads: string) => void;
   exporting: boolean;
   startUpHref: string;
   onRun: (bridge: Bridge) => void;
@@ -350,6 +365,18 @@ function RunnerMenu({ count, bridges, exporting, startUpHref, onRun, onExport }:
       </button>
       {open && (
         <div className="card-menu-list" role="menu">
+          <div className="card-menu-label">ADS lái xe ego</div>
+          <div className="runner-ads">
+            <select
+              aria-label="ADS lái xe ego"
+              value={ads}
+              onChange={(event) => onAdsChange(event.target.value)}
+              title={adsOptions.find((option) => option.id === ads)?.description ?? "Chọn ADS trước khi chạy"}
+            >
+              <option value="">— Chọn ADS —</option>
+              {adsOptions.map((option) => <option key={option.id} value={option.id}>{option.name}</option>)}
+            </select>
+          </div>
           <div className="card-menu-label">Chạy với Scenario Forge Bridge</div>
           {bridges.length ? (
             bridges.map((bridge) => (
@@ -358,8 +385,8 @@ function RunnerMenu({ count, bridges, exporting, startUpHref, onRun, onExport }:
                 type="button"
                 role="menuitem"
                 className="card-menu-item"
-                disabled={!bridge.online}
-                title={bridge.online ? `Chạy ${count} test case trên ${bridge.name} (${bridge.connection_uid})` : "Bridge đang offline"}
+                disabled={!bridge.online || !ads}
+                title={!bridge.online ? "Bridge đang offline" : !ads ? "Chọn ADS ở trên trước" : `Chạy ${count} test case trên ${bridge.name} (${bridge.connection_uid})`}
                 onClick={() => { setOpen(false); onRun(bridge); }}
               >
                 <Icon name="activity" size={14} />
