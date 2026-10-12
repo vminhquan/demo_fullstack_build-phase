@@ -27,6 +27,19 @@ from scenario_forge_bridge.config import BridgeConfig
 Log = Callable[[str], None]
 Send = Callable[[dict], Awaitable[None]]
 
+# Who drives the ego in a test run (`scenario-forge-bridge run --ads <name>`). Validation runs for agent2 always use
+# NO_BRAIN: ScenarioRunner's default NpcVehicleControl keeps the lane and the scenario's speed and never reacts.
+# ScenarioRunner v0.9.15/16 refuses --agent with --openscenario ("Agents are currently only compatible with route
+# scenarios"), so an ADS is one of its OpenSCENARIO controllers, assigned to the ego in the Init (ControllerAction).
+NO_BRAIN = "no-brain"
+ADS_CONTROLLERS: dict[str, dict[str, str]] = {
+    # srunner/scenariomanager/actorcontrols/simple_vehicle_control.py: follows the lane at the scenario's speed and
+    # brakes for vehicles, bikes and pedestrians ahead (sensor.other.obstacle, forward channel only, no swerving).
+    # Traffic lights are ignored: their phase is not part of the scenario and would make runs differ.
+    "simple": {"module": "simple_vehicle_control", "consider_obstacles": "true", "max_deceleration": "8.0"},
+}
+ADS_CHOICES = (NO_BRAIN, *ADS_CONTROLLERS)
+
 # Without criteria_* conditions in the StopTrigger, ScenarioRunner prints "Nothing to analyze" and passes.
 CRITERIA = ("CollisionTest",)
 # --timeout of scenario_runner.py: how long the CARLA client waits for the simulator (map loads are slow).
@@ -139,7 +152,7 @@ def child_env(cfg: BridgeConfig) -> dict[str, str]:
 # ---------------------------------------------------------------- XOSC and results
 
 
-def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
+def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA, ads: str = NO_BRAIN) -> str:
     """Makes a Scenario Forge XOSC end and get judged under ScenarioRunner v0.9.16:
 
     - ScenarioRunner ignores the Storyboard StopTrigger except its criteria_* conditions (open_scenario.py:581);
@@ -153,6 +166,7 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     - ScenarioRunner reads RelativeTargetLane as lane changes from the actor's own lane (> 0 = left) and ignores
       entityRef (openscenario_parser.py:1383); "0" divides by zero. A "0" becomes ±1 toward the referenced entity.
     - criteria_<Name> conditions go into the Storyboard StopTrigger: without any, every run "passes".
+    - `ads` other than NO_BRAIN: the ego gets that controller in the Init instead of any it had (ADS_CONTROLLERS).
     - ScenarioRunner builds those criteria for its ego vehicles only, and an ego is a Vehicle whose Property
       `type` is `ego_vehicle` (openscenario_configuration.py). With none, it prints "Nothing to analyze" and
       writes no report: the vehicle playing the hero (role_name hero, or named Ego) is marked as the ego.
@@ -168,6 +182,7 @@ def prepare_xosc(xosc: str, names: tuple[str, ...] = CRITERIA) -> str:
     end_after = next((item.get("value") for item in trigger.iter("SimulationTimeCondition") if item.get("value")), None) or str(END_AFTER_S)
 
     _fix_lane_changes(storyboard)
+    _assign_ads(root, storyboard, ads)
 
     first_act = next(storyboard.iter("Act"), None)
     init_actions = storyboard.find("Init/Actions")
@@ -273,6 +288,38 @@ def _ensure_ego(root: ET.Element) -> None:
         ET.SubElement(properties, "Property", {"name": "type", "value": "ego_vehicle"})
     else:
         kind.set("value", "ego_vehicle")
+
+
+def _assign_ads(root: ET.Element, storyboard: ET.Element, ads: str) -> None:
+    """Hand the ego to the ADS controller: a ControllerAction in its Init (ScenarioRunner reads it there), replacing
+    any controller the XOSC assigned. NO_BRAIN leaves the XOSC as it is."""
+    if ads == NO_BRAIN:
+        return
+    if ads not in ADS_CONTROLLERS:
+        raise CaseFailed("UNKNOWN_ADS", f"Không có ADS '{ads}'. Chọn một trong: {', '.join(ADS_CHOICES)}")
+    ego = next((item.get("name") for item in root.findall("Entities/ScenarioObject")
+                if any(prop.get("name") == "type" and prop.get("value") == "ego_vehicle" for prop in item.iter("Property"))), None)
+    actions = storyboard.find("Init/Actions")
+    if ego is None or actions is None:
+        raise CaseFailed("INVALID_XOSC", "XOSC không có xe ego hoặc Init để gắn ADS")
+    private = next((item for item in actions.findall("Private") if item.get("entityRef") == ego), None)
+    if private is None:
+        private = ET.SubElement(actions, "Private", {"entityRef": ego})
+    for action in [item for item in private.findall("PrivateAction") if item.find("ControllerAction") is not None]:
+        private.remove(action)
+    control = ET.Element("ControllerAction")
+    controller = ET.SubElement(ET.SubElement(control, "AssignControllerAction"), "Controller", {"name": f"ScenarioForgeADS_{ads}"})
+    properties = ET.SubElement(controller, "Properties")
+    for name, value in ADS_CONTROLLERS[ads].items():
+        ET.SubElement(properties, "Property", {"name": name, "value": value})
+    # ScenarioRunner iterates this element unconditionally (openscenario_parser.get_controller): it must be present.
+    override = ET.SubElement(control, "OverrideControllerValueAction")
+    for tag in ("Throttle", "Brake", "Clutch", "ParkingBrake", "SteeringWheel"):
+        ET.SubElement(override, tag, {"value": "0", "active": "false"})
+    ET.SubElement(override, "Gear", {"number": "0", "active": "false"})
+    action = ET.Element("PrivateAction")
+    action.append(control)
+    private.insert(0, action)
 
 
 def _start_poses(storyboard: ET.Element) -> dict[str, tuple[float, float, float]]:
@@ -394,18 +441,18 @@ def _stop(process: subprocess.Popen) -> None:
         process.wait()
 
 
-def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = None, *, camera_follow: bool | None = None) -> Outcome:
-    """Blocking: runs one test case (call it in a thread). Raises CaseFailed when there is no result.
-    `camera_follow` overrides cfg.camera (validation runs leave the CARLA window alone)."""
+def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = None, ads: str = NO_BRAIN) -> Outcome:
+    """Blocking: runs one test case (call it in a thread), the ego driven by `ads`. Raises CaseFailed when there is
+    no result."""
     if workdir.exists():
         shutil.rmtree(workdir, ignore_errors=True)
     workdir.mkdir(parents=True)
     scenario = workdir / f"{case.get('case_key') or case['test_case_id']}.xosc"
-    scenario.write_text(prepare_xosc(case["xosc"]), encoding="utf-8")
+    scenario.write_text(prepare_xosc(case["xosc"], ads=ads), encoding="utf-8")
     env = child_env(cfg)
 
     camera = None
-    if (cfg.camera == "follow") if camera_follow is None else camera_follow:
+    if cfg.camera == "follow":
         try:
             with open(workdir / "camera.log", "wb") as camera_log:
                 camera = subprocess.Popen([cfg.runner_python, "-c", CAMERA_CODE, cfg.carla_host, str(cfg.carla_port)],
@@ -447,7 +494,9 @@ def run_case(cfg: BridgeConfig, case: dict, workdir: Path, log: Log | None = Non
     finally:
         if camera is not None:
             _stop(camera)
-    return parse_result(workdir, exit_code, int((time.monotonic() - started) * 1000))
+    outcome = parse_result(workdir, exit_code, int((time.monotonic() - started) * 1000))
+    outcome.metrics["ego_driver"] = ads
+    return outcome
 
 
 # ---------------------------------------------------------------- runs
@@ -460,8 +509,10 @@ class RunExecutor:
     and `send` goes through whichever socket is open at that moment.
     """
 
-    def __init__(self, cfg: BridgeConfig, send: Send, log: Log) -> None:
+    def __init__(self, cfg: BridgeConfig, send: Send, log: Log, ads: str = NO_BRAIN) -> None:
         self.cfg, self.send, self.log = cfg, send, log
+        # Who drives the ego in test runs (run.assign); validate.request always runs the no-brain ego.
+        self.ads = ads
         self.queue: asyncio.Queue[dict] = asyncio.Queue()
         self.seen: set[int] = set()
         # Reports not yet acknowledged by the backend, in send order: re-sent after every reconnect so a
@@ -539,7 +590,7 @@ class RunExecutor:
                     raise CaseFailed("CARLA_UNREACHABLE", f"Không kết nối được CARLA {probe.host}:{probe.port}: {probe.error}")
                 await self.report({"type": "job.started", **base})
                 workdir = config_store.config_dir() / "runs" / str(run_id) / str(case.get("case_key") or case["test_case_id"])
-                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log)
+                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log, self.ads)
         except CaseFailed as exc:
             self.log(f"  ✗ {case.get('case_key')}: {exc.code}")
             return {"type": "job.failed", **base, "error_code": exc.code, "error_message": (exc.message or None) and exc.message[-4000:]}
@@ -547,7 +598,7 @@ class RunExecutor:
             self.log(f"  ✗ {case.get('case_key')}: {exc}")
             return {"type": "job.failed", **base, "error_code": "BRIDGE_ERROR", "error_message": f"{type(exc).__name__}: {exc}"[:4000]}
         collision = f", {outcome.metrics['collision_count']} va chạm" if outcome.metrics["collision"] else ""
-        self.log(f"  ✓ {case.get('case_key')}: {outcome.verdict}{collision} ({outcome.duration_ms / 1000:.1f} s)")
+        self.log(f"  ✓ {case.get('case_key')}: {outcome.verdict}{collision} ({outcome.duration_ms / 1000:.1f} s, ego: {self.ads})")
         return {"type": "job.completed", **base, "revision": case["revision"], "xosc_sha256": case["xosc_sha256"],
                 "map_name": case.get("map_name"), "verdict": outcome.verdict, "exit_code": outcome.exit_code,
                 "duration_ms": outcome.duration_ms, "metrics": outcome.metrics}
@@ -574,7 +625,9 @@ class RunExecutor:
                 case = {"case_key": "validate", "test_case_id": name, "xosc": xosc, "timeout_s": message.get("timeout_s") or 120}
                 # Validations run one at a time: one folder keeps the last run for diagnosis without piling up.
                 workdir = config_store.config_dir() / "validations" / "latest"
-                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log, camera_follow=False)
+                # Same camera setting as test runs (cfg.camera): the CARLA window follows the ego unless set to off.
+                # Always the no-brain ego, whatever --ads says: the scenario is valid only if it then collides.
+                outcome = await asyncio.to_thread(run_case, self.cfg, case, workdir, self.log, NO_BRAIN)
         except CaseFailed as exc:
             self.log(f"  ✗ kiểm tra {name[:8]}: {exc.code}")
             return {"status": "error", "error_code": exc.code, "error_message": (exc.message or None) and exc.message[-4000:]}

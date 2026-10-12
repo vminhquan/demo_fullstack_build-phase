@@ -336,3 +336,67 @@ def test_validate_waits_for_a_test_run_holding_carla(cfg) -> None:
         return order
 
     assert asyncio.run(asyncio.wait_for(main(), 30)) == ["run done", "validated"]
+
+
+# XOSC with an ego and its Init, as agent2 renders them (the minimal XOSC above has neither).
+EGO_XOSC = XOSC.replace("<RoadNetwork>", """<Entities>
+  <ScenarioObject name="hero"><Vehicle name="vehicle.audi.a2" vehicleCategory="car"><Properties>
+    <Property name="type" value="ego_vehicle"/><Property name="role_name" value="hero"/></Properties></Vehicle></ScenarioObject>
+  <ScenarioObject name="moto1"><Vehicle name="vehicle.yamaha.yzf" vehicleCategory="motorbike"/></ScenarioObject>
+</Entities><RoadNetwork>""").replace("<Story ", """<Init><Actions><Private entityRef="hero"><PrivateAction><LongitudinalAction><SpeedAction>
+  <SpeedActionDynamics dynamicsShape="step" value="0" dynamicsDimension="time"/>
+  <SpeedActionTarget><AbsoluteTargetSpeed value="13.9"/></SpeedActionTarget></SpeedAction></LongitudinalAction></PrivateAction></Private>
+</Actions></Init><Story """)
+
+
+def ego_controller(xosc: str) -> dict[str, str] | None:
+    """module and arguments of the ControllerAction in the ego's Init, as ScenarioRunner's get_controller reads them."""
+    root = ET.fromstring(xosc)
+    actions = root.findall("Storyboard/Init/Actions/Private[@entityRef='hero']/PrivateAction/ControllerAction")
+    if not actions:
+        return None
+    assert len(actions) == 1
+    # get_controller iterates OverrideControllerValueAction unconditionally and rejects any active override.
+    assert all(child.get("active") == "false" for child in actions[0].find("OverrideControllerValueAction"))
+    properties = actions[0].find("AssignControllerAction/Controller/Properties")
+    return {item.get("name"): item.get("value") for item in properties}
+
+
+def test_no_brain_leaves_the_ego_to_scenario_runner_default() -> None:
+    assert ego_controller(runner.prepare_xosc(EGO_XOSC)) is None
+
+
+def test_an_ads_takes_the_ego_in_the_init_replacing_any_controller() -> None:
+    once = runner.prepare_xosc(EGO_XOSC, ads="simple")
+    assert ego_controller(once) == {"module": "simple_vehicle_control", "consider_obstacles": "true", "max_deceleration": "8.0"}
+    # The Init speed stays: the controller cruises at the scenario's speed, so the incident timing holds.
+    assert ET.fromstring(once).find(".//Private[@entityRef='hero']//AbsoluteTargetSpeed").get("value") == "13.9"
+    # Run twice (or on a file that had its own controller): still one controller, the ADS.
+    assert ego_controller(runner.prepare_xosc(once, ads="simple"))["module"] == "simple_vehicle_control"
+    with pytest.raises(runner.CaseFailed) as unknown:
+        runner.prepare_xosc(EGO_XOSC, ads="autoware")
+    assert unknown.value.code == "UNKNOWN_ADS"
+
+
+def test_test_runs_use_the_ads_and_validations_the_no_brain_ego(cfg, tmp_path) -> None:
+    digest = hashlib.sha256(EGO_XOSC.encode()).hexdigest()
+    sent: list[dict] = []
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    async def main() -> dict:
+        executor = runner.RunExecutor(cfg, send, lambda _: None, ads="simple")
+        serving = asyncio.create_task(executor.serve())
+        await executor.accept({"type": "run.assign", "run_id": 3, "test_cases": [case(xosc=EGO_XOSC, xosc_sha256=digest)]})
+        while not any(m["type"] == "run.completed" for m in sent):
+            await asyncio.sleep(0.05)
+        serving.cancel()
+        return await executor.validate(validate_request(xosc=EGO_XOSC, xosc_sha256=digest))
+
+    checked = asyncio.run(asyncio.wait_for(main(), 30))
+    ran = (tmp_path / "config" / "runs" / "3" / "TC-000171" / "TC-000171.xosc").read_text()
+    validated = (tmp_path / "config" / "validations" / "latest" / "validate.xosc").read_text()
+    assert ego_controller(ran)["module"] == "simple_vehicle_control" and ego_controller(validated) is None
+    completed = next(m for m in sent if m["type"] == "job.completed")
+    assert completed["metrics"]["ego_driver"] == "simple" and checked["status"] == "ok"
